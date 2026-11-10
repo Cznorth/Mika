@@ -53,6 +53,35 @@ class TaskGateTest {
     }
 
     @Test
+    fun experimentalPhoneOptInDoesNotReleaseOtherLockedOperations() = runTest {
+        locked.value = true
+        val experimental = TaskGate(locked, shellUp, allowLockedPhone = { true }) { true }
+        experimental.pass(phone = { true }) { reported += it }
+        assertEquals(listOf<TaskState?>(null), reported)
+        var browserPassed = false
+        launch { experimental.pass(phone = { false }) { reported += it }; browserPassed = true }
+        runCurrent()
+        assertFalse(browserPassed)
+        assertEquals(TaskState.Held(TaskGate.LOCKED), reported.last())
+        locked.value = false
+        runCurrent()
+        assertTrue(browserPassed)
+    }
+
+    @Test
+    fun experimentalPhoneOptInStillWaitsWhenHelperIsDown() = runTest {
+        locked.value = true
+        shellUp.value = false
+        val experimental = TaskGate(locked, shellUp, allowLockedPhone = { true }) { true }
+        var passed = false
+        val job = launch { experimental.pass(phone = { true }) { reported += it }; passed = true }
+        runCurrent()
+        assertFalse(passed)
+        assertEquals(TaskState.Held(TaskGate.paused(TaskGate.SHELL_DOWN)), reported.last())
+        job.cancel()
+    }
+
+    @Test
     fun gateRefreshesSystemLockStateBeforeAllowingWrite() = runTest {
         var systemLocked = true
         var unlocks = 0

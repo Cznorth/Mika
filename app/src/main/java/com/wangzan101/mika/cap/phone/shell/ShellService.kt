@@ -1174,13 +1174,25 @@ class ShellService(
     }
 
     override fun injectTap(displayId: Int, x: Int, y: Int): Boolean {
+        // Never let either the ordinary or privileged fallback target the physical display.
+        if (!ownDisplay(displayId) || displayId <= Display.DEFAULT_DISPLAY) return false
         val now = SystemClock.uptimeMillis()
         val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x.toFloat(), y.toFloat(), 0)
         val up = MotionEvent.obtain(now, now + TAP_MS, MotionEvent.ACTION_UP, x.toFloat(), y.toFloat(), 0)
         return try {
             down.source = InputDevice.SOURCE_TOUCHSCREEN
             up.source = InputDevice.SOURCE_TOUCHSCREEN
-            injectPair(down, up, displayId) { exec("input", "-d", "$displayId", "tap", "$x", "$y") == 0 }
+            injectPair(down, up, displayId) {
+                if (com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE) {
+                    val bounds = android.graphics.Point()
+                    val screen = displayManager.getDisplay(displayId) ?: return@injectPair false
+                    @Suppress("DEPRECATION") screen.getRealSize(bounds)
+                    rootTapCommand(displayId, x, y, bounds.x, bounds.y)?.let { command ->
+                        // Fixed, numeric-only operation. su may refuse; no arbitrary model-supplied shell text.
+                        exec("su", "-c", command) == 0
+                    } ?: false
+                } else exec("input", "-d", "$displayId", "tap", "$x", "$y") == 0
+            }
         } finally {
             down.recycle()
             up.recycle()
@@ -1732,6 +1744,11 @@ class ShellService(
         }
 
         /** 只有缺权限(SecurityException,如 shell 没有 ADD_TRUSTED_DISPLAY)才值得去掉可信标志再试;别的失败照旧报错。 */
+        /** Dev-only root fallback accepts only coordinates within a non-primary display. */
+        internal fun rootTapCommand(displayId: Int, x: Int, y: Int, width: Int, height: Int): String? =
+            if (displayId > Display.DEFAULT_DISPLAY && width > 0 && height > 0 && x in 0 until width && y in 0 until height)
+                "input -d $displayId tap $x $y" else null
+
         internal fun retryWithoutTrust(t: Throwable): Boolean = t is SecurityException
 
         // WindowManager.DISPLAY_IME_POLICY_LOCAL = 0, _FALLBACK_DISPLAY = 1, _HIDE = 2。

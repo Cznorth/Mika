@@ -24,6 +24,8 @@ android {
         buildConfigField("String", "GIT_HASH", "\"$gitHash\"")
         // 关于页版本号后的 Beta 标记;出正式版时改成 false
         buildConfigField("boolean", "BETA", "true")
+        // Explicitly experimental; never enable in release or the regular debug install.
+        buildConfigField("boolean", "EXPERIMENTAL_LOCKED_PHONE", "false")
     }
 
     // 沙箱程序只有 arm64 版本(jniLibs/arm64-v8a);APK 不限 ABI,别的设备照常安装、显示「此设备不支持沙箱」。
@@ -57,6 +59,9 @@ android {
         // 真机验收时并排安装,保留发行版和用户数据;默认构建标识不变。
         if (providers.gradleProperty("devInstall").isPresent) getByName("debug") {
             applicationIdSuffix = ".dev"
+            if (providers.gradleProperty("experimentalLockedPhone").isPresent) {
+                buildConfigField("boolean", "EXPERIMENTAL_LOCKED_PHONE", "true")
+            }
             resValue("string", "app_name", "Mika Dev")
         }
         // 看流畅度用的包:和发布版一样不可调试(调试包不做预先编译,界面慢好几倍,手感不作数),

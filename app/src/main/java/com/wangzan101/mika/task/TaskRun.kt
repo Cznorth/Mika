@@ -678,6 +678,8 @@ class TaskRun(
             }
             val taskGate = TaskGate(states.locked, shellUp,
                 refreshLocked = states::refresh,
+                // Dev-only experiment for remotely dispatched tasks. The normal build retains the lock gate.
+                allowLockedPhone = { com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE && mcpExternalId != null },
                 unattendedUnlock = unlockAuthorized?.let { authorized ->
                     {
                         val result = app.deviceAccess.access.unlock(authorized)

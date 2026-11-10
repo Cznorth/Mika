@@ -24,6 +24,8 @@ class TaskGate(
     private val shellAvailable: StateFlow<Boolean>,
     /** 写操作前同步重读系统锁屏状态，避免熄屏广播尚未处理时放行。 */
     private val refreshLocked: (() -> Unit)? = null,
+    /** Experimental opt-in: only allow phone operations past the lock gate. */
+    private val allowLockedPhone: () -> Boolean = { false },
     /** 无人值守任务遇到锁屏时调用;返回解锁状态,返回前必须按系统状态刷新 [locked]。 */
     private val unattendedUnlock: (suspend () -> String)? = null,
     private val unlockFailureMessage: () -> String = { tr(R.string.trigger_unlock_failed) },
@@ -75,7 +77,7 @@ class TaskGate(
                     while (shellAvailable.value && !moveBack()) pauseUntilResume(MOVE_BACK_FAILED, setWaiting)
                     if (shellAvailable.value) movedAway.value = false
                 }
-                locked.value -> {
+                locked.value && !(onPhone && allowLockedPhone()) -> {
                     setWaiting(TaskState.Held(LOCKED))
                     if (unattendedUnlock == null) {
                         locked.first { !it }
