@@ -180,9 +180,9 @@ object HelperHandoff {
     /** 不碰 Binder 就能做的检查;通过返回 null。口令另由 [HandoffNonces] 核对。 */
     fun check(
         callingUid: Int, callingPid: Int, reportedUid: Int, reportedPid: Int,
-        helperApk: String?, appApk: String, hasBinder: Boolean,
+        helperApk: String?, appApk: String, hasBinder: Boolean, allowRoot: Boolean = false,
     ): Reject? = when {
-        callingUid != SHELL_UID -> Reject.NotShell
+        callingUid != SHELL_UID && !(allowRoot && callingUid == 0) -> Reject.NotShell
         reportedUid != callingUid || reportedPid != callingPid -> Reject.IdMismatch
         helperApk != appApk -> Reject.StaleApk
         !hasBinder -> Reject.NoBinder

@@ -6,8 +6,33 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import com.wangzan101.mika.settings.KeyCipher
 import org.junit.Test
+import kotlinx.coroutines.runBlocking
 
 class TaskRecoveryTest {
+    @Test fun recoveryCompletesBeforeRunIsRegisteredAndFailureDoesNotRegister() = runBlocking {
+        val registry = RunRecoveryRegistry()
+        try {
+            registry.begin("failed") {
+                assertFalse(registry.live.contains("failed"))
+                throw IllegalStateException("recovery failed")
+            }
+            throw AssertionError("expected failure")
+        } catch (_: IllegalStateException) { }
+        assertFalse(registry.live.contains("failed"))
+        registry.begin("run") { assertFalse(registry.live.contains("run")) }
+        assertTrue(registry.live.contains("run"))
+    }
+
+    @Test fun cleanupFailureStillUnregistersRun() = runBlocking {
+        val registry = RunRecoveryRegistry()
+        registry.begin("run") { }
+        try {
+            finishRegisteredRun(end = { registry.end("run") }) { throw IllegalStateException("cleanup failed") }
+            throw AssertionError("expected failure")
+        } catch (_: IllegalStateException) { }
+        assertFalse(registry.live.contains("run"))
+    }
+
     private class FakeAudio(val modes: MutableMap<String, String>) : AudioPort {
         override fun mode(packageName: String) = modes[packageName] ?: "default"
         override fun mute(packageName: String): Boolean { modes[packageName] = "ignore"; return true }

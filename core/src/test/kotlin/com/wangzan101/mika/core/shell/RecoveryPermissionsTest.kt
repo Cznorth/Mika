@@ -174,6 +174,17 @@ class RecoveryPermissionsTest {
     }
 
     @Test
+    fun automaticExclusionLeavesAccessibilityPendingWhileApplyingOtherPermissions() = runTest {
+        val shell = FakeShell(a11y = other)
+        val store = Store(RecoveryConsent(applied = setOf(restore, autoOn)))
+        val p = RecoveryPermissions({ shell }, store, pkg, setOf(a11y))
+        assertEquals(PermissionResult.Done, p.applyPending())
+        assertTrue(PermissionCommands.whitelistAdd(pkg) in shell.ran)
+        assertFalse(store.consent.value.isApplied(a11y))
+        assertTrue(shell.ran.none { it.contains("enabled_accessibility_services") })
+    }
+
+    @Test
     fun applyPendingWithoutRunnerDoesNothing() = runTest {
         val store = Store()
         val p = RecoveryPermissions({ null }, store, pkg)

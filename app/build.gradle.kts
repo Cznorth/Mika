@@ -58,7 +58,7 @@ android {
     buildTypes {
         // 真机验收时并排安装,保留发行版和用户数据;默认构建标识不变。
         if (providers.gradleProperty("devInstall").isPresent) getByName("debug") {
-            applicationIdSuffix = ".dev"
+            applicationIdSuffix = if (providers.gradleProperty("rootProbeInstall").isPresent) ".rootprobe" else ".dev"
             if (providers.gradleProperty("experimentalLockedPhone").isPresent) {
                 buildConfigField("boolean", "EXPERIMENTAL_LOCKED_PHONE", "true")
             }

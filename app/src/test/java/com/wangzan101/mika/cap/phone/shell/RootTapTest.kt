@@ -13,4 +13,18 @@ class RootTapTest {
         assertNull(ShellService.rootTapCommand(3, 50, 100, 100, 100))
         assertNull(ShellService.rootTapCommand(3, 50, 50, 0, 100))
     }
+
+    @Test fun swipeRequiresValidDisplayBoundsAndDuration() {
+        assertEquals("input -d 3 swipe 0 1 99 98 400", ShellService.rootSwipeCommand(3, 0, 1, 99, 98, 400, 100, 100))
+        assertNull(ShellService.rootSwipeCommand(0, 0, 1, 99, 98, 400, 100, 100))
+        assertNull(ShellService.rootSwipeCommand(3, 0, 1, 100, 98, 400, 100, 100))
+        assertNull(ShellService.rootSwipeCommand(3, 0, 1, 99, 98, 0, 100, 100))
+        assertNull(ShellService.rootSwipeCommand(3, 0, 1, 99, 98, 10001, 100, 100))
+    }
+
+    @Test fun keyCommandsRejectPhysicalScreenAndUnapprovedKeys() {
+        assertEquals("input -d 3 keyevent 4", ShellService.rootKeyCommand(3, 4))
+        assertNull(ShellService.rootKeyCommand(0, 4))
+        assertNull(ShellService.rootKeyCommand(3, 26))
+    }
 }

@@ -123,6 +123,10 @@ interface IMikaShell {
     // 对 SystemUI 做一次定向点击,用于生物识别优先锁屏页上「用密码解锁」这类回退按钮;不含凭据。
     boolean revealDeviceCredentialTap(int x, int y) = 51;
 
+    int rootTap(int displayId, int taskId, String packageName, int x, int y) = 52;
+    int rootSwipe(int displayId, int taskId, String packageName, int x1, int y1, int x2, int y2, int durationMs) = 53;
+    int rootKey(int displayId, int taskId, String packageName, int keyCode) = 54;
+
     // 沿用早先定下的销毁事务号;AIDL 要求要么全部方法编号要么都不编号
     void destroy() = 16777114;
 }

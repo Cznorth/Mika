@@ -93,34 +93,38 @@ class ShellService(
     }
 
     override fun createDisplay(surface: Surface, width: Int, height: Int, dpi: Int): Int = try {
-        createVirtualDisplay(surface, width, height, dpi, trusted = true)
-    } catch (t: Throwable) {
-        if (!retryWithoutTrust(t)) {
-            Log.e(TAG, "createDisplay failed", t)
+        if (android.os.Process.myUid() != 0 || Build.VERSION.SDK_INT < 33) {
+            Log.w(TAG, "root trusted independent display unavailable")
             -1
-        } else {
-            // shell 没有 ADD_TRUSTED_DISPLAY 时(有的系统不给):去掉只对可信屏可用的几项再建一次。
-            // 退回后这块屏没有自己的焦点,自检页读它的标志会报「own focus no」并给出主屏焦点可能受影响的提示(Advice.FocusShared)。
-            Log.w(TAG, "createDisplay without trusted display flags, retrying", t)
-            try {
-                createVirtualDisplay(surface, width, height, dpi, trusted = false)
-            } catch (t: Throwable) {
-                Log.e(TAG, "createDisplay failed", t)
-                -1
-            }
-        }
+        } else createVirtualDisplay(surface, width, height, dpi, trusted = true)
+    } catch (t: Throwable) {
+        Log.e(TAG, "trusted display creation failed", t)
+        -1
     }
 
     private fun createVirtualDisplay(surface: Surface, width: Int, height: Int, dpi: Int, trusted: Boolean): Int {
         val flags = displayFlags(Build.VERSION.SDK_INT, trusted)
         val vd = displayManager.createVirtualDisplay("mika-agent", width, height, dpi, surface, flags)
-        val id = vd.display.displayId
+        val (id, group) = try {
+            val id = vd.display.displayId
+            val group = displayGroup(id)
+            check(id > Display.DEFAULT_DISPLAY && group != null && group > 0) { "independent display group unavailable" }
+            id to group
+        } catch (t: Throwable) {
+            vd.release()
+            throw t
+        }
         synchronized(displays) { displays[id] = vd }
-        setFullscreenWindowingMode(id)
-        ensureOrientationWatch()
-        setImePolicy(id)
-        if (DisplayAwake.needed(flags, FLAG_OWN_DISPLAY_GROUP, displayGroup(id))) awake.start(id)
-        return id
+        try {
+            setFullscreenWindowingMode(id)
+            ensureOrientationWatch()
+            setImePolicy(id)
+            if (DisplayAwake.needed(flags, FLAG_OWN_DISPLAY_GROUP, group)) awake.start(id)
+            return id
+        } catch (t: Throwable) {
+            releaseDisplay(id)
+            throw t
+        }
     }
 
     /** 自成一组的虚拟屏一直不睡,见 [DisplayAwake]。 */
@@ -1173,6 +1177,86 @@ class ShellService(
         false
     }
 
+    private fun rootTarget(displayId: Int, taskId: Int, packageName: String): Boolean =
+        com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE &&
+            displayId > Display.DEFAULT_DISPLAY && ownDisplay(displayId) && taskId >= 0 &&
+            packageName.isNotBlank() && topTaskId(displayId) == taskId &&
+            displayOfTask(taskId) == displayId && packageOfTask(taskId) == packageName
+
+    private fun rootBounds(displayId: Int): android.graphics.Point? {
+        val screen = displayManager.getDisplay(displayId) ?: return null
+        return android.graphics.Point().also {
+            @Suppress("DEPRECATION")
+            screen.getRealSize(it)
+        }
+    }
+
+    private fun rootTargetUid(displayId: Int, taskId: Int, packageName: String): Int? {
+        if (android.os.Process.myUid() != 0 || Build.VERSION.SDK_INT < 33 || !rootTarget(displayId, taskId, packageName)) return null
+        return runCatching {
+            val task = tasksOn(displayId).firstOrNull() ?: return null
+            if (TASK_INFO.getField("taskId").getInt(task) != taskId ||
+                (TASK_INFO.getField("topActivity").get(task) as? ComponentName)?.packageName != packageName) return null
+            val user = TASK_INFO.getField("userId").getInt(task)
+            val pm = context.packageManager
+            (pm.javaClass.getMethod("getPackageUidAsUser", String::class.java, Int::class.java, Int::class.java)
+                .invoke(pm, packageName, 0, user) as Int).takeIf { it > 0 }
+        }.getOrNull()
+    }
+
+    override fun rootTap(displayId: Int, taskId: Int, packageName: String, x: Int, y: Int): Int {
+        val uid = rootTargetUid(displayId, taskId, packageName) ?: return AsciiTextKeys.NOT_SENT
+        val bounds = rootBounds(displayId) ?: return AsciiTextKeys.NOT_SENT
+        if (rootTapCommand(displayId, x, y, bounds.x, bounds.y) == null) return AsciiTextKeys.NOT_SENT
+        val now = SystemClock.uptimeMillis()
+        val down = MotionEvent.obtain(now, now, MotionEvent.ACTION_DOWN, x.toFloat(), y.toFloat(), 0)
+        val up = MotionEvent.obtain(now, now + TAP_MS, MotionEvent.ACTION_UP, x.toFloat(), y.toFloat(), 0)
+        return try {
+            down.source = InputDevice.SOURCE_TOUCHSCREEN
+            up.source = InputDevice.SOURCE_TOUCHSCREEN
+            if (!rootTarget(displayId, taskId, packageName)) AsciiTextKeys.NOT_SENT
+            else if (!injectTo(down, displayId, uid)) AsciiTextKeys.UNCONFIRMED
+            else if (injectTo(up, displayId, uid)) AsciiTextKeys.DISPATCHED else AsciiTextKeys.UNCONFIRMED
+        } finally { down.recycle(); up.recycle() }
+    }
+
+    override fun rootSwipe(displayId: Int, taskId: Int, packageName: String, x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int): Int {
+        val uid = rootTargetUid(displayId, taskId, packageName) ?: return AsciiTextKeys.NOT_SENT
+        val bounds = rootBounds(displayId) ?: return AsciiTextKeys.NOT_SENT
+        if (rootSwipeCommand(displayId, x1, y1, x2, y2, durationMs, bounds.x, bounds.y) == null) return AsciiTextKeys.NOT_SENT
+        if (!rootTarget(displayId, taskId, packageName)) return AsciiTextKeys.NOT_SENT
+        val start = SystemClock.uptimeMillis()
+        fun send(action: Int, x: Float, y: Float): Boolean {
+            val event = MotionEvent.obtain(start, SystemClock.uptimeMillis(), action, x, y, 0)
+            event.source = InputDevice.SOURCE_TOUCHSCREEN
+            return try { injectTo(event, displayId, uid) } finally { event.recycle() }
+        }
+        if (!send(MotionEvent.ACTION_DOWN, x1.toFloat(), y1.toFloat())) return AsciiTextKeys.UNCONFIRMED
+        var complete = true
+        val steps = (durationMs / 16).coerceIn(1, 625)
+        for (step in 1 until steps) {
+            val due = start + durationMs.toLong() * step / steps
+            val wait = due - SystemClock.uptimeMillis()
+            if (wait > 0) SystemClock.sleep(wait)
+            val fraction = step.toFloat() / steps
+            if (!send(MotionEvent.ACTION_MOVE, x1 + (x2 - x1) * fraction, y1 + (y2 - y1) * fraction)) { complete = false; break }
+        }
+        val wait = start + durationMs - SystemClock.uptimeMillis()
+        if (complete && wait > 0) SystemClock.sleep(wait)
+        val released = send(MotionEvent.ACTION_UP, x2.toFloat(), y2.toFloat())
+        return if (complete && released) AsciiTextKeys.DISPATCHED else AsciiTextKeys.UNCONFIRMED
+    }
+
+    override fun rootKey(displayId: Int, taskId: Int, packageName: String, keyCode: Int): Int {
+        val uid = rootTargetUid(displayId, taskId, packageName) ?: return AsciiTextKeys.NOT_SENT
+        if (rootKeyCommand(displayId, keyCode) == null || !rootTarget(displayId, taskId, packageName)) return AsciiTextKeys.NOT_SENT
+        val now = SystemClock.uptimeMillis()
+        val down = KeyEvent(now, now, KeyEvent.ACTION_DOWN, keyCode, 0, 0, VIRTUAL_KEYBOARD, 0, 0, InputDevice.SOURCE_KEYBOARD)
+        val up = KeyEvent.changeAction(down, KeyEvent.ACTION_UP)
+        if (!injectTo(down, displayId, uid)) return AsciiTextKeys.UNCONFIRMED
+        return if (injectTo(up, displayId, uid)) AsciiTextKeys.DISPATCHED else AsciiTextKeys.UNCONFIRMED
+    }
+
     override fun injectTap(displayId: Int, x: Int, y: Int): Boolean {
         // Never let either the ordinary or privileged fallback target the physical display.
         if (!ownDisplay(displayId) || displayId <= Display.DEFAULT_DISPLAY) return false
@@ -1590,7 +1674,8 @@ class ShellService(
     }
 
     /**
-     * 只投给 [targetUid] 拥有的焦点窗口,等处理完再返回;焦点不在它那里时系统拒绝,事件不会落到别的窗口。
+     * 只投给 [targetUid] 拥有的窗口,等处理完再返回。按键按焦点选择窗口,触摸按坐标选择窗口;
+     * 系统只校验接收窗口的 UID,不能区分同一 UID 下的其他窗口,不能用于保证窗口级隔离。
      * 用安卓 13 起的隐藏重载 `injectInputEvent(event, mode, targetUid)`,没有这个重载时不注入。
      * 失败只记异常类型:被拒的原因里不含按键,但这条路径输入的是锁屏凭据,不留多余信息。
      */
@@ -1748,6 +1833,15 @@ class ShellService(
         internal fun rootTapCommand(displayId: Int, x: Int, y: Int, width: Int, height: Int): String? =
             if (displayId > Display.DEFAULT_DISPLAY && width > 0 && height > 0 && x in 0 until width && y in 0 until height)
                 "input -d $displayId tap $x $y" else null
+
+        internal fun rootSwipeCommand(displayId: Int, x1: Int, y1: Int, x2: Int, y2: Int, durationMs: Int, width: Int, height: Int): String? =
+            if (rootTapCommand(displayId, x1, y1, width, height) != null &&
+                rootTapCommand(displayId, x2, y2, width, height) != null && durationMs in 1..10000)
+                "input -d $displayId swipe $x1 $y1 $x2 $y2 $durationMs" else null
+
+        internal fun rootKeyCommand(displayId: Int, keyCode: Int): String? =
+            if (displayId > Display.DEFAULT_DISPLAY && keyCode in setOf(KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_DEL))
+                "input -d $displayId keyevent $keyCode" else null
 
         internal fun retryWithoutTrust(t: Throwable): Boolean = t is SecurityException
 

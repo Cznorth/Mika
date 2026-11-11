@@ -143,15 +143,32 @@ class ClipBackup(private val read: () -> String?, private val write: (String?) -
  * 有任务在跑时也不还原剪贴板(那时它可能正借着剪贴板粘贴)。
  * 由 App 建一份、经 [Owner] 给出([live] 要在各任务间共用);等助手时用进程里共用的那条 [sharedShell]。
  */
+internal class RunRecoveryRegistry {
+    val lock = Mutex()
+    val live = ConcurrentHashMap.newKeySet<String>()
+
+    suspend fun begin(key: String, recover: suspend () -> Unit) = lock.withLock {
+        recover()
+        live += key
+    }
+
+    fun end(key: String) { live -= key }
+}
+
+internal suspend fun finishRegisteredRun(end: () -> Unit, cleanup: suspend () -> Unit) {
+    try { cleanup() } finally { end() }
+}
+
 class TaskRecovery(context: Context, private val sharedShell: SharedShell) {
     private val app = context.applicationContext
     private val clipCipher by lazy { KeystoreKeyCipher(CLIP_KEY_ALIAS) }
 
     /** 恢复与任务开工时的登记共用,保证二者不交错。 */
-    val lock = Mutex()
+    private val registry = RunRecoveryRegistry()
+    val lock get() = registry.lock
 
     /** 还在跑的任务;进程被杀后为空,所有记录都归恢复处理。 */
-    private val live = ConcurrentHashMap.newKeySet<String>()
+    private val live get() = registry.live
 
     fun audioMute(shell: IMikaShell, runKey: String) = AudioMute(ShellAudio(shell), marker(runKey))
 
@@ -167,14 +184,13 @@ class TaskRecovery(context: Context, private val sharedShell: SharedShell) {
         markerNames().any { it !in liveNames() } || (live.isEmpty() && prefs().getBoolean(CLIP_HELD, false))
 
     /** 任务开工:先恢复没人收尾的遗留,再登记为在跑。 */
-    suspend fun beginRun(shell: IMikaShell, runKey: String) = lock.withLock {
+    suspend fun beginRun(shell: IMikaShell, runKey: String) = registry.begin(runKey) {
         withContext(Dispatchers.IO) { recoverWith(shell) }
-        live += runKey
     }
 
     /** 任务收尾(自己的静音已恢复)之后调用;没恢复成的留在记录里,下次由恢复处理。 */
     fun endRun(runKey: String) {
-        live -= runKey
+        registry.end(runKey)
     }
 
     /** 粘贴期间剪贴板是 Mika 的;进程在这期间结束,下次启动让 shell 把用户原来的剪贴板还回去。 */

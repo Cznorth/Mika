@@ -64,7 +64,10 @@ class BuiltinShellRecovery(
 
     val permissions: RecoveryPermissions by lazy {
         // 助手在运行(不论怎么起的)或配对过,命令就有路可走
-        RecoveryPermissions({ runner.takeIf { control.status.value == BuiltinShellStatus.Running || control.paired } }, settings, app.packageName)
+        RecoveryPermissions(
+            { runner.takeIf { control.status.value == BuiltinShellStatus.Running || control.paired } }, settings, app.packageName,
+            if (com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE) setOf(RecoveryCapability.Accessibility) else emptySet(),
+        )
     }
 
     /**
@@ -137,7 +140,9 @@ class BuiltinShellRecovery(
             }
         }
         scope.launch { service.collect { if (it.connected) settings.accessibilitySeen = true } }
-        scope.launch { accessibilityRepair.watch(service, control.status, userUnlocked, active) }
+        if (!com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE) {
+            scope.launch { accessibilityRepair.watch(service, control.status, userUnlocked, active) }
+        }
     }
 
     /**

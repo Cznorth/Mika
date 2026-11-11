@@ -133,6 +133,7 @@ class RecoveryPermissions(
     private val runner: () -> ShellCommandRunner?,
     private val store: RecoveryConsentStore,
     private val packageName: String,
+    private val automaticExcluded: Set<RecoveryCapability> = emptySet(),
 ) {
     private val lock = Mutex()
     private val _autoFailed = MutableStateFlow<Set<RecoveryCapability>>(emptySet())
@@ -168,7 +169,7 @@ class RecoveryPermissions(
     suspend fun applyPending(): PermissionResult = lock.withLock {
         val shell = runner() ?: return@withLock PermissionResult.NoRunner
         var failure: PermissionResult? = null
-        for (c in store.consent.value.pending) {
+        for (c in store.consent.value.pending - automaticExcluded) {
             val r = run(shell, listOf(c), on = true)
             if (r == PermissionResult.Done) store.save(store.consent.value.withApplied(c, true))
             else if (failure == null) failure = r

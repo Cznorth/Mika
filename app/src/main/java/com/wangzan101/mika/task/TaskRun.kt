@@ -571,7 +571,8 @@ class TaskRun(
             val states = DeviceStateWatcher(service) { id -> phone?.shell?.topTaskId(id) ?: -1 }.also { watcher = it }
 
             /** 接上手机:连内置助手、等无障碍、备好(到第一次 launch_app 才建的)虚拟屏;缺一样就报 phone_unavailable。 */
-            suspend fun connectPhone(): AndroidScreen {
+            @Suppress("UNUSED")
+            suspend fun connectLegacyPhone(): AndroidScreen {
                 // 版本要求只属于手机操作;旧系统仍可聊天、使用网页和沙箱,也不应被引导去配对不支持的助手。
                 if (Build.VERSION.SDK_INT < Prerequisites.MIN_SDK) throw PhoneUnavailable(TaskService.TOO_OLD)
                 val conn = connection ?: phoneServices.sharedShell.acquire().also { connection = it }
@@ -583,10 +584,12 @@ class TaskRun(
                             if (phoneServices.shellControl.restart == HelperRestart.UsbCommand) NO_PHONE_HELPER_USB else NO_PHONE_HELPER,
                         )
                     }
+                // 遗留静音和剪贴板恢复只依赖助手，不应被无障碍服务的状态阻挡。
+                // 即使下面等待失败，任务收尾仍会调用 endRun；重试时 beginRun 会在同一锁内重新核对遗留记录。
+                recovery.beginRun(shell, key)
                 // 服务卡在「开着却没运行」、正在自动重启时多等一会儿,修好了接着做,放弃了照常报错
                 val a11y = AccessibilityRepair.awaitService(ScreenAccessibility.instance, phoneServices.recovery.accessibilityRepair.phase, A11Y_WAIT_MS)
                     ?: throw PhoneUnavailable(StatusCopy.accessibilityUnavailable(phoneServices.recovery.accessibility.value.enabled))
-                recovery.beginRun(shell, key)
                 // 只有用过手机的任务才跟着 shell 的死活:shell 没了,虚拟屏和上面的 App 一起没了
                 shellDeath = IBinder.DeathRecipient {
                     shellDied = true
@@ -644,6 +647,56 @@ class TaskRun(
                 watchTarget(side0, states)
                 return screen
             }
+            var rootScreen: com.wangzan101.mika.core.uistate.RootDisplayScreen? = null
+            suspend fun connectPhone(): com.wangzan101.mika.core.uistate.ScreenPort {
+                if (Build.VERSION.SDK_INT < Prerequisites.MIN_SDK) throw PhoneUnavailable(TaskService.TOO_OLD)
+                val conn = connection ?: phoneServices.sharedShell.acquire().also { connection = it }
+                val shell = withTimeoutOrNull(SHELL_WAIT_MS) { conn.shell.filterNotNull().first() }
+                    ?: run {
+                        phoneServices.setupPrompt.request()
+                        throw PhoneUnavailable(if (phoneServices.shellControl.restart == HelperRestart.UsbCommand) NO_PHONE_HELPER_USB else NO_PHONE_HELPER)
+                    }
+                return try {
+                    connectRootDisplayPhone(
+                        initialize = { recovery.beginRun(shell, key) },
+                        onConnected = {
+                            val binder = shell.asBinder()
+                            val death = IBinder.DeathRecipient {
+                                shellDied = true
+                                val running = loop
+                                if (running != null) running.cancel() else job?.cancel()
+                            }
+                            binder.linkToDeath(death, 0)
+                            shellBinder = binder
+                            shellDeath = death
+                            side.launch { conn.shell.map { it != null }.collect { shellUp.value = it } }
+                        },
+                        create = {
+                            val display = resources.acquire(Dispatchers.IO, AgentDisplay::release) {
+                                AgentDisplay(shell, metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
+                                    service.getSystemService(DisplayManager::class.java))
+                            }
+                            val driver = AndroidRootDisplayDriver(shell, display)
+                            com.wangzan101.mika.core.uistate.RootDisplayScreen(
+                                com.wangzan101.mika.core.uistate.RootDisplayBackend(driver), driver,
+                                launch = { pkg ->
+                                    if (withContext(Dispatchers.IO) { shell.startApp(display.displayId, pkg) } != 0) false
+                                    else {
+                                        withTimeoutOrNull(4000) {
+                                            while (driver.target()?.packageName != pkg) delay(100)
+                                            true
+                                        } ?: false
+                                    }
+                                },
+                                apps = { withContext(Dispatchers.IO) { launchableApps(service.packageManager, service.packageName) } },
+                                width = display.width, height = display.height,
+                            )
+                        },
+                    ).also { rootScreen = it }
+                } catch (_: RootWindowUnavailable) {
+                    throw PhoneUnavailable("Root 窗口隔离能力尚不可用，无法安全操作手机。")
+                }
+            }
             val phoneScreen = LazyPhoneScreen(metrics.widthPixels, metrics.heightPixels,
                 listApps = { withContext(Dispatchers.IO) { launchableApps(service.packageManager, service.packageName) } },
                 // 另一份用户里的 App 要问内置助手:助手已经连着才问,不为它去接
@@ -654,9 +707,10 @@ class TaskRun(
                 }) { connectPhone() }
             val accessedPhone = com.wangzan101.mika.core.uistate.AppAccessScreenPort(
                 phoneScreen, appAccess,
-                packages = { phone?.screen?.accessPackages().orEmpty() },
+                packages = { rootScreen?.accessPackages().orEmpty() },
                 protectedUi = { appAccess.sensitiveUi }, ownPackage = service.packageName,
-                windowToken = { ScreenAccessibility.windowGeneration() },
+                // Root has no verified window-change generation yet; do not reuse accessibility's cache key.
+                windowToken = null,
             ).also { accessGuard = it }
             afterTask = phoneScreen.afterTask
             // 挪回虚拟屏后等窗口出现,Agent 接下来读屏才读得到
@@ -1035,7 +1089,8 @@ class TaskRun(
             withContext(Dispatchers.Main + NonCancellable) { runCatching { UserBrowser.existing()?.loans?.end(key) } }
             withContext(Dispatchers.IO + NonCancellable) {
                 // 前面哪步抛错,屏和网页显示也照放(按建的反序)
-                try {
+                finishRegisteredRun(end = { recovery.endRun(key) }) {
+                  try {
                     // 先定 Mika 屏上 App 的去留(留下的挪到主屏后面、正在出声的关掉)并释放屏,再还原静音:留下的不会突然出声
                     val apps = phone?.takeIf { !shellDied }?.let { p ->
                         p.display.current?.let { d -> AppsAfterTaskEnd.finish(p.shell, d.displayId, afterTask) }
@@ -1046,11 +1101,11 @@ class TaskRun(
                         r.close()
                         if (BuildConfig.DEBUG) runStore?.mirrorToExternal(r.runId)
                     }
-                    // 恢复抛错也要撤掉「在跑」的登记,否则这份记录永远不归恢复处理
-                    try { mute?.restoreAll() } finally { recovery.endRun(key) }
+                    mute?.restoreAll()
                     watcher?.close()
-                } finally {
+                  } finally {
                     resources.close()
+                  }
                 }
             }
             phone = null

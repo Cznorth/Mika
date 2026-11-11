@@ -198,7 +198,8 @@ class BuiltinShellManager(context: Context, private val hub: HelperHub, private 
         override suspend fun launchHelperAsRoot(): SuAnswer? {
             val su = RootShell.su() ?: return null.also { root.suGone() }
             val command = HelperHandoff.rootCommand(app.applicationInfo.sourceDir, app.packageName, Process.myUid(), ownCertPin(app))
-            val p = RootShell.start(SuProbe.shellArgs(su, command))
+            val rootHelper = com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE
+            val p = RootShell.start(if (rootHelper) SuProbe.rootArgs(su, command) else SuProbe.shellArgs(su, command))
             val before = hub.shell.value
             try {
                 val uid = try {
@@ -210,7 +211,7 @@ class BuiltinShellManager(context: Context, private val hub: HelperHub, private 
                 }
                 when (uid) {
                     null -> return SuAnswer.Denied
-                    HelperHandoff.SHELL_UID -> Unit
+                    if (rootHelper) 0 else HelperHandoff.SHELL_UID -> Unit
                     else -> return SuAnswer.WrongUid
                 }
                 p.outputStream.apply {

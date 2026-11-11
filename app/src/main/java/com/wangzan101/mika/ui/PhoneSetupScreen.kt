@@ -60,6 +60,7 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import com.wangzan101.mika.core.shell.BuiltinShellFailure
 import com.wangzan101.mika.core.shell.BuiltinShellFix
 import com.wangzan101.mika.core.shell.BuiltinShellStatus
+import com.wangzan101.mika.core.shell.RootGrant
 import com.wangzan101.mika.core.shell.HelperRestart
 import com.wangzan101.mika.core.shell.PairingCode
 import com.wangzan101.mika.core.shell.PairingNotifyIssue
@@ -107,6 +108,8 @@ private val StepSetSaver = Saver<Set<SetupStep>, String>(
 fun PhoneSetupScreen(status: SystemStatus, repair: Boolean, onFix: (Fix) -> Unit, onboarding: Boolean = false, onClose: () -> Unit) {
     val context = LocalContext.current
     val phone = remember { PhoneServices.of(context) }
+    val rootState by phone.shellManager.root.state.collectAsState()
+    LaunchedEffect(Unit) { phone.shellManager.root.refresh() }
     val pairing = phone.pairing
     val discovery by phone.shellControl.pairingDiscovery.collectAsState()
     val scanning by phone.shellManager.scanningPorts.collectAsState()
@@ -187,6 +190,9 @@ fun PhoneSetupScreen(status: SystemStatus, repair: Boolean, onFix: (Fix) -> Unit
     BackHandler(onBack = close)
     PhoneSetupContent(
         view = view,
+        rootAvailable = rootState.suPresent,
+        rootGrant = rootState.startGrant,
+        onRootStart = phone.shellManager.root::requestStart,
         onStepAction = { step ->
             when (step) {
                 SetupStep.DeveloperOptions -> onFix(Fix.OpenAboutPhone)
@@ -269,6 +275,9 @@ fun PhoneSetupContent(
     usbCommand: String? = null,
     onAskUsb: () -> Unit = {},
     onCopyUsbCommand: () -> Unit = {},
+    rootAvailable: Boolean = false,
+    rootGrant: RootGrant = RootGrant.Unknown,
+    onRootStart: () -> Unit = {},
 ) {
     val canRevisit = view.phase == SetupPhase.Guide || view.phase == SetupPhase.Failed
     fun revisitable(step: SetupStep) = canRevisit && step != view.current && step in PhoneSetupFlow.REVISITABLE &&
@@ -278,6 +287,15 @@ fun PhoneSetupContent(
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.navigationBars)) {
             TopBar(PhoneSetupCopy.BAR_TITLE, MikaIcons.Back, onClose, stringResource(R.string.back))
             Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
+                if (rootAvailable && view.phase != SetupPhase.Success) {
+                    GroupCard {
+                        ListRow(
+                            MikaIcons.Refresh, PhoneSetupCopy.ROOT_START, PhoneSetupCopy.rootStartLine(rootGrant), first = true,
+                            onClick = if (rootGrant != RootGrant.Granted && rootGrant != RootGrant.Pending) onRootStart else null,
+                        ) { RowValue(PhoneSetupCopy.ROOT_AUTO, if (rootGrant == RootGrant.Granted) ValueTone.Ok else ValueTone.Plain) }
+                    }
+                    FooterNote(PhoneSetupCopy.ROOT_NOTE)
+                }
                 if (view.phase == SetupPhase.Unavailable) {
                     // 这个环境没有能起助手的路:只说明,不列走不通的步骤
                     GroupCard {

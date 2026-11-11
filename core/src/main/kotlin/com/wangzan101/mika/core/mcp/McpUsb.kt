@@ -60,7 +60,7 @@ object McpUsb {
             |fi
             |info=${quote(infoPath)}
             |if [ "${'$'}1" = "off" ]; then
-            |  out=${'$'}(am start-foreground-service -n ${quote(component)} -a ${quote(offAction)} 2>&1)
+            |  out=${'$'}(am start-foreground-service -n ${quote(component)} -a ${quote(offAction)} 2>&1) || { echo "${'$'}out"; echo "Mika service command failed."; exit 1; }
             |  case "${'$'}out" in *rror*|*xception*) echo "${'$'}out"; exit 1 ;; esac
             |  i=0
             |  while [ -f "${'$'}info" ]; do
@@ -75,8 +75,8 @@ object McpUsb {
             |  sh ${quote(helperScript)} || echo "Phone control is not ready yet; tasks that operate apps wait until it is."
             |fi
             |boot=${'$'}(settings get global boot_count 2>/dev/null)
-            |out=${'$'}(am start-foreground-service -n ${quote(component)} -a ${quote(onAction)} 2>&1)
-            |case "${'$'}out" in *rror*|*xception*) echo "${'$'}out"; echo "Is Mika installed and up to date?"; exit 1 ;; esac
+            |out=${'$'}(am start-foreground-service -n ${quote(component)} -a ${quote(onAction)} 2>&1) || { echo "${'$'}out"; echo "Mika service command failed; check the installed app, user and system logs."; exit 1; }
+            |case "${'$'}out" in *rror*|*xception*) echo "${'$'}out"; echo "Check the installed app, user and system logs."; exit 1 ;; esac
             |i=0
             |until grep -q "\"boot\": *\"${'$'}boot\"" "${'$'}info" 2>/dev/null; do
             |  i=${'$'}((i + 1))

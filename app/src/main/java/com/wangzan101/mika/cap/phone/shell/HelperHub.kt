@@ -87,6 +87,7 @@ class HelperHub(context: Context) {
             helperApk = extras?.getString(HelperHandoff.KEY_APK),
             appApk = app.applicationInfo.sourceDir,
             hasBinder = binder != null,
+            allowRoot = com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE,
         )?.let { return reject(callingUid, it) }
         val gate = nonces
         val nonce = extras?.getString(HelperHandoff.KEY_NONCE)

@@ -15,6 +15,15 @@ import kotlinx.coroutines.test.runTest
 import org.junit.Test
 
 class HelperHandoffTest {
+    @Test fun rootHandoffRequiresExplicitOptInAndMatchingIdentity() {
+        fun check(uid: Int, reported: Int, allowed: Boolean) = HelperHandoff.check(
+            uid, 77, reported, 77, "/a.apk", "/a.apk", true, allowRoot = allowed,
+        )
+        assertEquals(HelperHandoff.Reject.NotShell, check(0, 0, false))
+        assertNull(check(0, 0, true))
+        assertEquals(HelperHandoff.Reject.IdMismatch, check(0, 2000, true))
+        assertEquals(HelperHandoff.Reject.NotShell, check(10001, 10001, true))
+    }
     private class MemStore : NonceStore {
         var slots = NonceSlots()
         override fun load() = slots

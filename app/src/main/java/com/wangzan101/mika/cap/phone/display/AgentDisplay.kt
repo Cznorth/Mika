@@ -74,9 +74,15 @@ class AgentDisplay(
             throw IllegalStateException("createDisplay failed")
         }
         displayId = id
-        reader.setOnImageAvailableListener({ schedule() }, handler)
-        // 建屏期间可能已经有帧排进来;先有正确的屏号,再处理这些帧。
-        handler.post { schedule() }
+        try {
+            reader.setOnImageAvailableListener({ schedule() }, handler)
+            // 建屏期间可能已经有帧排进来;先有正确的屏号,再处理这些帧。
+            check(handler.post { schedule() }) { "display frame thread unavailable" }
+        } catch (t: Throwable) {
+            runCatching { shell.releaseDisplay(id) }
+            closeLocal()
+            throw t
+        }
     }
 
     private fun schedule() {
@@ -125,6 +131,22 @@ class AgentDisplay(
             ByteArrayOutputStream().also { crop.compress(Bitmap.CompressFormat.PNG, 100, it) }.toByteArray()
         } finally {
             crop.recycle()
+        }
+    }
+
+    /** Capture the image and its producer timestamp under the same lock. */
+    fun latestTimedFramePng(): Pair<Long, ByteArray>? {
+        val captured = synchronized(frameLock) {
+            val bmp = fullFrame
+            if (released || !hasFrame || bmp == null || frameTimestampNanos <= 0) null
+            else frameTimestampNanos to uprightDisplayFrame(bmp, frameGeometry, paint = paint)
+        } ?: return null
+        return try {
+            captured.first to ByteArrayOutputStream().also {
+                captured.second.compress(Bitmap.CompressFormat.PNG, 100, it)
+            }.toByteArray()
+        } finally {
+            captured.second.recycle()
         }
     }
 

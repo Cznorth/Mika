@@ -39,12 +39,16 @@ object HelperProcess {
 
     @JvmStatic
     fun main(args: Array<String>) {
+        Log.i(TAG, "helper entry reached")
         if (args.size < 3) {
             Log.e(TAG, "usage: HelperMain <package> <uid> <cert-sha256> (nonce on stdin)")
             exitProcess(2)
         }
         val packageName = args[0]
-        val appUid = args[1].toIntOrNull() ?: exitProcess(2)
+        val appUid = args[1].toIntOrNull() ?: run {
+            Log.e(TAG, "invalid app uid")
+            exitProcess(2)
+        }
         val certPin = args[2]
         // 读完就关:标准输入只用来递口令
         val launchNonce = runCatching { System.`in`.bufferedReader().readLine()?.trim() }.getOrNull()
@@ -54,13 +58,23 @@ object HelperProcess {
             exitProcess(2)
         }
         // ShellContext 自建 ActivityThread 时要有主线程 Looper
-        Looper.prepareMainLooper()
-        val service = ShellService(allowedUid = appUid)
-        // 上次在静音中被杀、没来得及恢复的 App,先把声音还回去
-        service.recoverMuted()
-        val helper = Helper(service, packageName, appUid, certPin)
-        helper.start(launchNonce)
-        Looper.loop()
+        var stage = "prepare looper"
+        try {
+            Looper.prepareMainLooper()
+            stage = "create shell service"
+            val service = ShellService(allowedUid = appUid)
+            stage = "recover muted apps"
+            service.recoverMuted()
+            stage = "create helper"
+            val helper = Helper(service, packageName, appUid, certPin)
+            stage = "start handoff"
+            helper.start(launchNonce)
+            stage = "main loop"
+            Looper.loop()
+        } catch (error: Throwable) {
+            Log.e(TAG, "helper failed at $stage (${error.javaClass.name})")
+            exitProcess(1)
+        }
     }
 
     private class Helper(
@@ -95,7 +109,9 @@ object HelperProcess {
             }
         }
 
-        fun start(launchNonce: String) = worker.post {
+        fun start(launchNonce: String) = worker.post { initialDeliver(launchNonce, 0) }
+
+        private fun initialDeliver(launchNonce: String, attempt: Int) {
             when (deliver(launchNonce)) {
                 Outcome.Accepted -> {
                     // Mika 收下了这一个:之前起的(或残留的)助手实例都该走了
@@ -104,10 +120,18 @@ object HelperProcess {
                 }
                 Outcome.Rejected -> exitProcess(0)
                 Outcome.Failed -> exitProcess(1)
+                Outcome.Unavailable -> {
+                    val next = attempt + 1
+                    if (next >= RETRY_DELAYS_MS.size) {
+                        Log.w(TAG, "provider unavailable after initial handoff retries")
+                        exitProcess(1)
+                    }
+                    worker.postDelayed({ initialDeliver(launchNonce, next) }, RETRY_DELAYS_MS[next])
+                }
             }
         }
 
-        private enum class Outcome { Accepted, Rejected, Failed }
+        private enum class Outcome { Accepted, Rejected, Failed, Unavailable }
 
         /** 经 ActivityManager 拿 Mika 的 provider(同 `content call` 的做法),把 Binder 和自报的 uid/pid 交过去。 */
         @SuppressLint("PrivateApi", "DiscouragedPrivateApi")
@@ -129,7 +153,10 @@ object HelperProcess {
             } catch (t: Throwable) {
                 Log.w(TAG, "getContentProviderExternal failed", t)
                 return Outcome.Failed
-            } ?: return Outcome.Failed
+            } ?: run {
+                Log.w(TAG, "provider unavailable for $packageName")
+                return Outcome.Unavailable
+            }
             try {
                 // 同名 authority 只可能属于一个包;还是核对一下,不把 Binder 交给 Mika 以外的 App
                 val info = holder.javaClass.getField("info").get(holder) as? ProviderInfo
@@ -288,7 +315,7 @@ object HelperProcess {
                 Outcome.Accepted -> retrying = false
                 // Mika 不认这个助手了(重装过、解除了配对、或者已经换了新的):退出
                 Outcome.Rejected -> exitProcess(0)
-                Outcome.Failed -> {
+                Outcome.Failed, Outcome.Unavailable -> {
                     retrying = attempt + 1 < RETRY_DELAYS_MS.size
                     if (retrying) worker.postDelayed({ redeliver(attempt + 1) }, RETRY_DELAYS_MS[attempt + 1])
                 }

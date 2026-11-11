@@ -112,6 +112,8 @@ class McpUsbTest {
         assertTrue(s.contains("if [ \"\$(id -u)\" != \"2000\" ]; then"))
         assertTrue(s.contains("am start-foreground-service -n 'p/p.mcp.McpService' -a 'p.USB_ON'"))
         assertTrue(s.contains("am start-foreground-service -n 'p/p.mcp.McpService' -a 'p.USB_OFF'"))
+        assertEquals(2, Regex("\\|\\| \\{ echo").findAll(s).count())
+        assertTrue(s.contains("Mika service command failed; check the installed app, user and system logs."))
         assertTrue(s.contains("sh '/storage/emulated/0/Android/data/p/files/usb-start.sh'"))
         assertTrue(s.contains("settings get global boot_count"))
         assertTrue(s.contains("adb forward tcp:8765 tcp:8765"))
