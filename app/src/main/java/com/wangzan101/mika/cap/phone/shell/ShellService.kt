@@ -108,7 +108,13 @@ class ShellService(
         val (id, group) = try {
             val id = vd.display.displayId
             val group = displayGroup(id)
-            check(id > Display.DEFAULT_DISPLAY && group != null && group > 0) { "independent display group unavailable" }
+            check(id > Display.DEFAULT_DISPLAY && group != null) { "display group unavailable: display=$id group=$group" }
+            // ColorOS 16 把 OWN_DISPLAY_GROUP 的屏也放进默认组(0):跟着主屏亮灭,主屏灭时出不了帧。
+            // 实验构建里先接受它(主屏亮着时能用),正式构建仍要独立组。
+            if (group <= 0) {
+                check(com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE) { "independent display group unavailable: display=$id group=$group" }
+                Log.w(TAG, "display $id landed in default group; follows main screen power")
+            }
             id to group
         } catch (t: Throwable) {
             vd.release()
@@ -163,7 +169,7 @@ class ShellService(
         val global = Class.forName("android.hardware.display.DisplayManagerGlobal").getMethod("getInstance").invoke(null)!!
         val info = global.javaClass.getMethod("getDisplayInfo", Int::class.java).invoke(global, displayId)!!
         info.javaClass.getField("displayGroupId").getInt(info)
-    }.getOrNull()
+    }.onFailure { Log.w(TAG, "display group lookup failed", it) }.getOrNull()
 
     /** 只往这个服务自己建的虚拟屏上启动,调用方传错屏号(比如主屏)也不会打扰用户。 */
     private fun ownDisplay(displayId: Int): Boolean = synchronized(displays) { displayId in displays }
@@ -320,7 +326,17 @@ class ShellService(
      */
     @SuppressLint("PrivateApi")
     private fun launchIntent(packageName: String, userId: Int): Intent? {
-        if (userId == myUser) return context.packageManager.getLaunchIntentForPackage(packageName)
+        if (userId == myUser) {
+            // Some ColorOS system packages (notably Settings) expose a launcher
+            // activity but return null from getLaunchIntentForPackage. Resolve the
+            // explicit MAIN/LAUNCHER entry as the platform launcher does.
+            context.packageManager.getLaunchIntentForPackage(packageName)?.let { return it }
+            val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(packageName)
+            context.packageManager.queryIntentActivities(query, 0).firstOrNull()?.activityInfo?.let { info ->
+                return Intent(query).setComponent(ComponentName(info.packageName, info.name))
+            }
+            return null
+        }
         val query = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER).setPackage(packageName)
         val found = try {
             val pm = context.packageManager

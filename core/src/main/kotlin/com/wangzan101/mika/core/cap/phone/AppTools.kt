@@ -71,6 +71,9 @@ internal object ListApps : PhoneTool {
     }
 }
 
+/** 主用户:Mika 自己所在的那份;传它等于没传 user。 */
+private const val MAIN_USER = 0
+
 internal object LaunchApp : PhoneTool {
     override val verb = Verb.LaunchApp
     override val batchable = true
@@ -92,7 +95,8 @@ internal object LaunchApp : PhoneTool {
     override suspend fun execute(a: Args, ctx: ToolContext): ToolExecution {
         val p = a.str("package")!!
         if (!LinkPolicy.PACKAGE.matches(p)) throw ArgError("package", "must be an Android package name")
-        val user = a.int("user", 0, MAX_USER)
+        // 有的模型/网关把可选参数全填上,user 0 就是主用户里的那份本体,当没给处理
+        val user = a.int("user", 0, MAX_USER)?.takeIf { it != MAIN_USER }
         val cold = a.bool("cold", false)
         val wait = a.int("wait", 1, MAX_WAIT_S)
         // 只打开列出过的那几份:不在可用的另一份用户里(私密空间、别人的用户、没装)的一律不碰
@@ -165,7 +169,8 @@ internal object AppAfterTask : PhoneTool {
         val action = a.str("action")!!
         if (action != KEEP && action != CLOSE) throw ArgError("action", "must be keep or close")
         val reason = a.str("reason", max = 200)!!.trim()
-        val user = a.int("user", 0, MAX_USER)
+        // 有的模型/网关把可选参数全填上,user 0 就是主用户里的那份本体,当没给处理
+        val user = a.int("user", 0, MAX_USER)?.takeIf { it != MAIN_USER }
         val marks = ctx.phone.screen.afterTask ?: return failCode(AFTER_TASK_UNAVAILABLE)
         val previous = marks.mark(p, user, action == KEEP, reason)
         return ok {
