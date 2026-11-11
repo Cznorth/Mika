@@ -19,12 +19,16 @@ internal suspend fun connectRootPhone(
     return RootVisualScreen(verifiedBackend, width, height)
 }
 
+internal class RootDisplayDisabled : Exception()
+
 /** The display session is scoped to the task; caller owns and releases its resources. */
 internal suspend fun connectRootDisplayPhone(
     initialize: suspend () -> Unit,
     create: suspend () -> com.wangzan101.mika.core.uistate.RootDisplayScreen,
     onConnected: suspend () -> Unit,
+    enabled: Boolean = true,
 ): com.wangzan101.mika.core.uistate.RootDisplayScreen {
+    if (!enabled) throw RootDisplayDisabled()
     initialize()
     onConnected()
     return create()

@@ -658,6 +658,7 @@ class TaskRun(
                     }
                 return try {
                     connectRootDisplayPhone(
+                        enabled = com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE,
                         initialize = { recovery.beginRun(shell, key) },
                         onConnected = {
                             val binder = shell.asBinder()
@@ -693,6 +694,8 @@ class TaskRun(
                             )
                         },
                     ).also { rootScreen = it }
+                } catch (_: RootDisplayDisabled) {
+                    throw PhoneUnavailable("Root 显示控制尚未在此构建中启用。")
                 } catch (_: RootWindowUnavailable) {
                     throw PhoneUnavailable("Root 窗口隔离能力尚不可用，无法安全操作手机。")
                 }

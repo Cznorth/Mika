@@ -28,4 +28,12 @@ class RootDisplayConnectorTest {
   finally { scope.close(); scope.close() }
   assertEquals(1, released)
  }
+ @Test fun disabledBackendDoesNotInitializeOrAllocate() = runBlocking {
+  var touched = false
+  try {
+   connectRootDisplayPhone({ touched = true }, { touched = true; error("unexpected") }, { touched = true }, enabled = false)
+   fail("disabled backend should fail")
+  } catch (_: RootDisplayDisabled) { }
+  assertFalse(touched)
+ }
 }
