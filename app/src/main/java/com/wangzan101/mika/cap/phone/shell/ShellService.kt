@@ -270,6 +270,13 @@ class ShellService(
         if (resumeKept(displayId, packageName, userId)) return START_OK
         val intent = launchIntent(packageName, userId) ?: return START_NOT_FOUND
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Root 显示后端:这块屏上还没有它的任务时另开一个,不把用户在主屏后台的那份挪过来。
+        // 那份顶上可能是别的 App 的页面(如 ColorOS 设置里打开的云服务页),挪过来后顶层包名对不上会判成启动失败,
+        // 还会把用户的返回栈搬到虚拟屏上。读不到任务列表时也按另开处理。
+        if (com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE &&
+            !runCatching { tasksOn(displayId).any { isCopy(it, packageName, userId) } }.getOrDefault(false)) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+        }
         val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId).toBundle()
         // 另一份用户里的先走桌面打开图标的那条路:有的系统对程序启动的另一份先弹「用哪一个打开」,桌面这条路不弹
         val component = intent.component
