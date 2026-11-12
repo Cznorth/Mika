@@ -74,8 +74,13 @@ class ActionExecutor(
         run(call, origin, followUp, reads = null)
 
     /** [reads]:页面脚本一次调用里的读单独计数的范围(来源要求隔离时);那里的动作仍按任务计。 */
-    private suspend fun run(call: Part.ToolCall, origin: Origin, followUp: FollowUp, reads: GuardScope?): ActionOutcome {
-        val args = parseArgs(call.argsJson)
+    private suspend fun run(given: Part.ToolCall, origin: Origin, followUp: FollowUp, reads: GuardScope?): ActionOutcome {
+        println("MikaAction run_start name=${given.name}")
+        // 有的模型/网关把可选参数全填上(空串):空串当没给,免得 ref:"" 和 element:"" 被当成「两个都给了」
+        val parsed = parseArgs(given.argsJson)
+        val args = withoutBlankStrings(parsed)
+        val call = if (args === parsed) given else given.copy(argsJson = args.toString())
+        println("MikaAction args_parsed name=${call.name}")
         // 不动屏幕的工具(沙箱一类):不进屏幕守卫,由各自的守卫另管
         val offScreen = tools.offScreen(call.name)
         val verb = tools.verb(call.name)
@@ -85,6 +90,7 @@ class ActionExecutor(
         }
         // 之后的关卡、判定都按这次调用的那块屏(到这次调用结束)
         tools.aim(call.name, args)
+        println("MikaAction aimed name=${call.name}")
         try {
             return aimed(call, origin, followUp, reads, args, offScreen, verb)
         } catch (e: com.wangzan101.mika.core.access.AppAccessDenied) {
@@ -105,16 +111,19 @@ class ActionExecutor(
     private suspend fun aimed(
         given: Part.ToolCall, origin: Origin, followUp: FollowUp, reads: GuardScope?, givenArgs: JsonObject, offScreen: Boolean, verb: Verb?,
     ): ActionOutcome {
+        println("MikaAction app_access_start name=${given.name}")
         // 按描述指的目标先换成此刻那一屏里的编号:之后的判定、审批、执行和按编号的完全一样;找不到或不唯一就不做
         var call = given
         var args = givenArgs
         var note: JsonObject? = null
         tools.interfaces.checkAppAccess(tools.declared(call.name))
+        println("MikaAction app_access_done name=${call.name}")
         when (val d = tools.interfaces.described(tools.declared(call.name), args)) {
             is Described.Failed -> return ran(Step(call, args, origin, emptyList(), writing = false, offScreen, verb, null, followUp, reads, preset = d.result))
             is Described.Resolved -> { args = d.args; call = call.copy(argsJson = d.args.toString()); note = d.note }
             null -> Unit
         }
+        println("MikaAction described_done name=${call.name}")
         val policy = origin.policy
         val readScope = reads?.takeIf { verb in PAGE_READ_VERBS }
         val before = when {
@@ -122,21 +131,30 @@ class ActionExecutor(
             readScope != null -> guards.beforeAction(call.name, args, verb in DIAGNOSTIC_VERBS, readScope)
             else -> guards.beforeAction(call.name, args, verb in DIAGNOSTIC_VERBS)
         }
+        println("MikaAction guards_done name=${call.name} count=${before.size}")
         if (guards.stop != null) return refuse("guard_stopped", origin, before)
         if (policy.stopOnGuardWarning && before.isNotEmpty()) return refuse("guard_warning", origin, before)
         val writing = tools.writesScreen(call.name)
-        if (writing && !policy.gatedByCaller) gate()
+        if (writing && !policy.gatedByCaller) {
+            println("MikaAction gate_start name=${call.name}")
+            gate()
+            println("MikaAction gate_done name=${call.name}")
+        }
         // 没有可用的同意就不执行,也不计入失败熔断
+        println("MikaAction decision_start name=${call.name}")
         var d = decision.judge(call.name, args, origin)
+        println("MikaAction decision_done name=${call.name} type=${d::class.simpleName}")
         // 不在屏上、工具声明要问的一步(会改动东西的 root 命令):调用方问得到人就当场问,同意了按这次同意再判一次;
         // 问不到人(这次运行不能问、调用方不是模型单步)就不做,照被拦下记
         val ask = if (d is Decision.Required || d is Decision.Denied) tools.approvalRisk(call.name, args)?.ask else null
         if (ask != null) {
+            println("MikaAction approval_start name=${call.name}")
             val hit = Irreversible(ask.action, ask.content)
             val answer = (if (d is Decision.Required) followUp.approve(ask) else null)
                 ?: return declined(call, args, origin, before, hit, ToolExecution(Refusals.unavailable()), followUp, "approval_unavailable")
             if (answer.content["ok"] != JsonPrimitive(true)) return declined(call, args, origin, before, hit, answer, followUp, "confirmation_declined")
             d = decision.judge(call.name, args, origin)
+            println("MikaAction approval_done name=${call.name}")
         }
         when (d) {
             is Decision.Required -> return blocked(call, args, origin, before, d.hit, null, followUp)
@@ -157,6 +175,7 @@ class ActionExecutor(
         // 组合动作(脚本)本身不停,里面的每一步经这里各自停。到了屏数上限、停留中用户插了话就不做
         val screenPaced = writing && !offScreen && !tools.composite(call.name)
         val dwelt = if (screenPaced) tools.beforeWrite(call.name, outward = site != null) else Paced.NONE
+        println("MikaAction pacing_done name=${call.name} waitMs=${dwelt.waitMs}")
         dwelt.stop?.let { stop ->
             return ran(Step(call, args, origin, before, writing = false, offScreen, verb, null, followUp, reads, preset = stop, pacedMs = paced + dwelt.waitMs))
         }
@@ -171,7 +190,9 @@ class ActionExecutor(
         site?.let(tools::outwardStart)
         var done = false
         try {
+            println("MikaAction ran_start name=${call.name}")
             val outcome = if (policy.actionCapMs == null) ran(step) else withContext(NonCancellable) { ran(step) }
+            println("MikaAction ran_done name=${call.name}")
             if (screenPaced && outcome is ActionOutcome.Ran) tools.afterWrite(call.name, outcome.exec.content)
             if (site != null && outcome is ActionOutcome.Ran && outcome.exec.content["ok"] != JsonPrimitive(false)) {
                 done = true
@@ -355,3 +376,11 @@ class ActionExecutor(
         return ActionOutcome.Refused(code, content, before, hit)
     }
 }
+
+/** 去掉值为空白字符串的顶层参数;[KEEP_BLANK] 里的(要输入的文字)空串可能有意义,不动。没有要去的原样返回。 */
+internal fun withoutBlankStrings(o: JsonObject): JsonObject {
+    val blank = o.filter { (k, v) -> k !in KEEP_BLANK && v is JsonPrimitive && v.isString && v.content.isBlank() }.keys
+    return if (blank.isEmpty()) o else JsonObject(o.filterKeys { it !in blank })
+}
+
+private val KEEP_BLANK = setOf("text", "value", "content")
