@@ -12,6 +12,11 @@ class RootDisplayScreen(
     private val height: Int,
     /** 在 Mika 自己的屏上打开链接(VIEW 或指定动作),返回外壳的启动结果码(0 为成功);null 为不支持。 */
     private val openView: (suspend (action: String?, uri: String?, packageName: String?) -> Int)? = null,
+    /**
+     * 此刻这块屏的画面缩成的亮度格子和那一帧的时间戳(和 [RootDisplayDriver.nowNanos] 同一时钟);
+     * 判动作效果全靠它:这块屏没有元素列表,不比画面的话每一下都算「没效果」,连着几下就被叫停。
+     */
+    private val grid: (suspend () -> Pair<Long, com.wangzan101.mika.core.visual.FrameGrid>?)? = null,
 ) : ScreenPort {
     private val mutex = Mutex()
     private var target: RootDisplayTarget? = null
@@ -116,6 +121,7 @@ class RootDisplayScreen(
 
     companion object {
         private const val LINK_WAIT_POLLS = 40
+        private const val GRID_WAIT_POLLS = 30
         /** 粘贴和按键都没送出:多半是手机锁着(锁屏时剪贴板谁都读不到),只有纯 ASCII 能逐键打。 */
         const val TEXT_NOT_SENT = "text_not_sent: the text could not be put into the box. While the phone is locked " +
             "only plain ASCII letters, digits and symbols can be typed on Mika's screen; other text (e.g. Chinese) needs the " +
@@ -126,4 +132,15 @@ class RootDisplayScreen(
     override suspend fun scroll(ref: String?, snapshotId: String?, down: Boolean) = ActionResult.Failed("unsupported")
     override suspend fun waitStable(timeoutMs: Long) = false
     override suspend fun listApps() = apps()
+    override suspend fun frameGrid(): com.wangzan101.mika.core.visual.FrameGrid? {
+        val sample = grid ?: return null
+        val since = mutex.withLock { if (current() == null) return null else newerThan }
+        // 动作之后要等一帧动作之后的画面,不然拿动作前的帧去比,看起来总是没变
+        repeat(GRID_WAIT_POLLS) {
+            val g = sample() ?: return null
+            if (g.first > since) return g.second
+            kotlinx.coroutines.delay(50)
+        }
+        return sample()?.second
+    }
 }

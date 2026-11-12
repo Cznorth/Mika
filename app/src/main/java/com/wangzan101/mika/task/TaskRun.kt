@@ -692,6 +692,15 @@ class TaskRun(
                                 apps = { withContext(Dispatchers.IO) { launchableApps(service.packageManager, service.packageName) } },
                                 width = display.width, height = display.height,
                                 openView = { action, uri, pkg -> withContext(Dispatchers.IO) { shell.startView(display.displayId, action, uri, pkg) } },
+                                grid = {
+                                    withContext(Dispatchers.IO) {
+                                        // 先取时间戳再取帧:拿到的帧至少和这个时间戳一样新
+                                        val at = display.lastFrameAt() ?: return@withContext null
+                                        display.latestFrameBitmap()?.let { b ->
+                                            try { com.wangzan101.mika.core.visual.FrameGrid.sample(b.width, b.height, b::getPixel)?.let { at to it } } finally { b.recycle() }
+                                        }
+                                    }
+                                },
                             )
                         },
                     ).also { rootScreen = it }
