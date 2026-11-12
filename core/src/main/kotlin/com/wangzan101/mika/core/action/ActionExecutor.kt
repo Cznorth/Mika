@@ -377,10 +377,10 @@ class ActionExecutor(
     }
 }
 
-/** 去掉值为空白字符串的顶层参数;[KEEP_BLANK] 里的(要输入的文字)空串可能有意义,不动。没有要去的原样返回。 */
+/** 去掉值为空白字符串的顶层参数;要输入的文字(text)空串可能有意义,不动。没有要去的原样返回。 */
 internal fun withoutBlankStrings(o: JsonObject): JsonObject {
     val blank = o.filter { (k, v) -> k !in KEEP_BLANK && v is JsonPrimitive && v.isString && v.content.isBlank() }.keys
     return if (blank.isEmpty()) o else JsonObject(o.filterKeys { it !in blank })
 }
 
-private val KEEP_BLANK = setOf("text", "value", "content")
+private val KEEP_BLANK = setOf("text")

@@ -12,7 +12,7 @@ class BlankArgsTest {
 
     @Test
     fun dropsBlankSelectorsButKeepsText() {
-        val o = obj("""{"ref":"","element":" ","x":500,"y":230,"text":"","target":"search"}""")
+        val o = obj("""{"ref":"","element":" ","x":500,"y":230,"text":"","value":"","target":"search"}""")
         assertEquals(obj("""{"x":500,"y":230,"text":"","target":"search"}"""), withoutBlankStrings(o))
     }
 
