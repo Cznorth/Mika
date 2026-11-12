@@ -235,9 +235,31 @@ class TaskService : Service() {
                 onKeptPage(p)
             }
         }
+        followBackgroundGuard()
         // 没结束的运行在 App 启动时就处理过了;这里只补一道(进程里只做一次),并把此刻在跑的运行排除在外
         if (!FeatureFlags.get(this).quitRequested()) {
             (application as com.wangzan101.mika.MikaApp).runRecovery.recover(center.runs().map { RunId(it.key) }.toSet())
+        }
+    }
+
+    /**
+     * 有任务在跑时请 root 身份的内置助手撑着,别让系统(ColorOS 的 Hans)在熄屏后把 Mika 断网、冻住;
+     * 没任务了就撤。助手换了(重连)时在新的那个上重新开。助手不是 root 或是旧版本时什么也不做。
+     */
+    private fun followBackgroundGuard() {
+        val hub = runCatching { com.wangzan101.mika.cap.phone.PhoneServices.of(this).hub }.getOrNull() ?: return
+        scope.launch(Dispatchers.IO) {
+            var on: com.wangzan101.mika.shell.IMikaShell? = null
+            kotlinx.coroutines.flow.combine(taskState.busy, hub.shell) { busy, shell -> if (busy) shell else null }
+                .collect { want ->
+                    if (want === on) return@collect
+                    on?.let { old -> runCatching { old.keepTaskAlive(packageName, false) } }
+                    on = want?.takeIf { s ->
+                        val code = runCatching { s.keepTaskAlive(packageName, true) }.getOrDefault(-1)
+                        Log.i(TAG, "background guard on=$code")
+                        code == 0
+                    }
+                }
         }
     }
 
@@ -305,7 +327,12 @@ class TaskService : Service() {
                 run?.confirm(if (intent.action == ACTION_APPROVE) ConfirmChoice.Once else ConfirmChoice.Deny, key)
             }
         }
-        if (!taskState._busy.value && keeper.page.value == null) stopSelf(startId)
+        if (!taskState._busy.value && keeper.page.value == null) {
+            // 外部经 startForegroundService 交来取消等动作时,任务可能早已结束(或进程刚被拉起):
+            // 不进一次前台就停,系统会以「没按时进前台」把整个进程崩掉
+            settleForegroundStart()
+            stopSelf(startId)
+        }
         return START_NOT_STICKY
     }
 
@@ -723,6 +750,14 @@ class TaskService : Service() {
     /** 主屏一次只交一个 App:接管排在别的任务后面时先不给接管按钮。 */
     private fun takeoverFirst(run: TaskRun) = run.takeover?.let(takeoverQueue::isFirst) ?: true
 
+    /** 没有要做的事就要退出的那一次启动:先按 startForegroundService 的约定进一次前台再立刻撤掉,不留通知。 */
+    private fun settleForegroundStart() {
+        runCatching {
+            startInForeground(null, preparingNotification())
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        }.onFailure { Log.w(TAG, "settle foreground start failed", it) }
+    }
+
     /** 用 [run] 的进度通知编号进前台;还没有任务对象时用第一个槽位的。 */
     private fun startInForeground(run: TaskRun?, n: Notification) {
         val nid = run?.let { id(ID_PROGRESS, it) } ?: ID_PROGRESS
@@ -911,6 +946,8 @@ class TaskService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
+        // 服务没了就不再撑着(助手那边的叫停只是结束一个线程,不会卡住主线程)
+        runCatching { com.wangzan101.mika.cap.phone.PhoneServices.of(this).hub.shell.value?.keepTaskAlive(packageName, false) }
         // 服务没了就撑不住进程:留着的那一页如实关掉,对话里记下
         keeper.close(KeptPageClose.AppExit)
         getSystemService(NotificationManager::class.java).cancel(ID_KEPT)

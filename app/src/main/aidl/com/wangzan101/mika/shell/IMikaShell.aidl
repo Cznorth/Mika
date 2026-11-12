@@ -127,6 +127,10 @@ interface IMikaShell {
     int rootSwipe(int displayId, int taskId, String packageName, int x1, int y1, int x2, int y2, int durationMs) = 53;
     int rootKey(int displayId, int taskId, String packageName, int keyCode) = 54;
 
+    // 任务期间不让系统把 Mika 冻住、断网(见 BackgroundGuard):on=true 开始维持,false 撤掉。只作用在 Mika 自己的 uid;
+    // Mika 的进程全没了助手也会自己撤。0=已照办 1=助手不是 root,做不了 2=参数不对或出错
+    int keepTaskAlive(String packageName, boolean on) = 55;
+
     // 沿用早先定下的销毁事务号;AIDL 要求要么全部方法编号要么都不编号
     void destroy() = 16777114;
 }

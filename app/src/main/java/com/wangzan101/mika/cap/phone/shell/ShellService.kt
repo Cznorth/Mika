@@ -1764,7 +1764,67 @@ class ShellService(
         }
     }
 
+    private val guardLock = Any()
+    private var guardRun: GuardRun? = null
+
+    override fun keepTaskAlive(packageName: String, on: Boolean): Int {
+        if (!on) {
+            synchronized(guardLock) { guardRun?.finish(); guardRun = null }
+            return KEEP_ALIVE_DONE
+        }
+        if (Process.myUid() != 0) return KEEP_ALIVE_NOT_ROOT
+        val owned = runCatching { context.packageManager.getPackagesForUid(allowedUid) }.getOrNull()
+        if (owned != null && packageName !in owned) return KEEP_ALIVE_ERROR
+        synchronized(guardLock) {
+            if (guardRun?.isAlive == true) return KEEP_ALIVE_DONE
+            val guard = com.wangzan101.mika.core.shell.BackgroundGuard(allowedUid, packageName, GuardIo())
+            val ok = runCatching { guard.start() }.onFailure { Log.w(TAG, "guard start failed", it) }.getOrDefault(false)
+            if (!ok) { runCatching { guard.stop() }; return KEEP_ALIVE_ERROR }
+            guardRun = GuardRun(guard).also { it.start() }
+        }
+        Log.i(TAG, "background guard on for $allowedUid")
+        return KEEP_ALIVE_DONE
+    }
+
+    /** 每秒解冻一遍、每几秒补一遍放行规则;叫停、Mika 的进程全没了一阵、或到了上限就撤掉。 */
+    private inner class GuardRun(private val guard: com.wangzan101.mika.core.shell.BackgroundGuard) : Thread("MikaGuard") {
+        @Volatile private var stopped = false
+        init { isDaemon = true }
+
+        fun finish() { stopped = true; interrupt() }
+
+        override fun run() {
+            val until = SystemClock.uptimeMillis() + GUARD_MAX_MS
+            var gone = 0
+            var round = 0
+            try {
+                while (!stopped && SystemClock.uptimeMillis() < until) {
+                    val tick = runCatching { guard.tick() }.getOrNull()
+                    if (tick != null && tick.thawed > 0) Log.i(TAG, "guard thawed ${tick.thawed}")
+                    gone = if (tick?.alive == false) gone + 1 else 0
+                    if (gone >= GUARD_GONE_ROUNDS) break
+                    if (++round % GUARD_RULE_EVERY == 0) runCatching { guard.ensureRules() }
+                    sleep(GUARD_TICK_MS)
+                }
+            } catch (_: InterruptedException) {
+            } finally {
+                runCatching { guard.stop() }.onFailure { Log.w(TAG, "guard stop failed", it) }
+                synchronized(guardLock) { if (guardRun === this) guardRun = null }
+                Log.i(TAG, "background guard off")
+            }
+        }
+    }
+
+    private inner class GuardIo : com.wangzan101.mika.core.shell.BackgroundGuard.Io {
+        override fun run(vararg cmd: String): Pair<Int, String> = sh(*cmd)
+        override fun pidsOf(uid: Int): List<Int> = File("/proc").list().orEmpty().mapNotNull { it.toIntOrNull() }
+            .filter { pid -> runCatching { android.system.Os.stat("/proc/$pid").st_uid == uid }.getOrDefault(false) }
+        override fun read(path: String): String? = runCatching { File(path).takeIf { it.exists() }?.readText() }.getOrNull()
+        override fun write(path: String, text: String): Boolean = runCatching { File(path).writeText(text); true }.getOrDefault(false)
+    }
+
     override fun releaseAll() {
+        synchronized(guardLock) { guardRun?.finish(); guardRun = null }
         restoreClip()
         synchronized(muted) { muted.packages() }.forEach { key ->
             AppAudioKey.parse(key)?.let { (pkg, user) -> audioMuted(pkg, user, false) } ?: synchronized(muted) { muted.remove(key) }
@@ -1877,6 +1937,14 @@ class ShellService(
         private const val STROKE_MAX_POINTS = 1_024
         private const val STROKE_MAX_MS = 10_000L
         private const val CMD_TIMEOUT_S = 10L
+        const val KEEP_ALIVE_DONE = 0
+        const val KEEP_ALIVE_NOT_ROOT = 1
+        const val KEEP_ALIVE_ERROR = 2
+        private const val GUARD_TICK_MS = 1_000L
+        private const val GUARD_RULE_EVERY = 5
+        private const val GUARD_GONE_ROUNDS = 10
+        /** 兜底上限:漏了叫停也不会一直改着系统。 */
+        private const val GUARD_MAX_MS = 6 * 60 * 60 * 1000L
         private const val COMMAND_OUTPUT_MAX = 64 * 1024
         private const val READER_JOIN_MS = 1_000L
         private val MODE_RE = Regex("[a-z_]+")
