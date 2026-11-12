@@ -63,7 +63,8 @@ class ShellService(
     stateDir: File = File("/data/local/tmp"),
 ) : IMikaShell.Stub() {
     private val context: Context = ShellContext.create()
-    private val displays = HashMap<Int, VirtualDisplay>()
+    /** 自己建的屏和放掉它的办法(普通虚拟屏或 ColorOS 后台流转屏)。 */
+    private val displays = HashMap<Int, () -> Unit>()
     private var orientationWatch: DisplayOrientationWatch? = null
     private val requestedOrientations = ConcurrentHashMap<Int, Int>()
     /** 被静音的包 → 静音前的 PLAY_AUDIO 模式("default" 表示原先未设置),落在 [stateDir] 里,进程被杀后下次启动接着恢复。 */
@@ -103,6 +104,9 @@ class ShellService(
     }
 
     private fun createVirtualDisplay(surface: Surface, width: Int, height: Int, dpi: Int, trusted: Boolean): Int {
+        // 流转屏没有 STEAL_TOP_FOCUS_DISABLED,在它上面启动、点按会把焦点从主屏抢走;只在主屏没亮(熄屏、锁屏)时用。
+        // 主屏亮着时普通虚拟屏跟着主屏亮,够用,也不抢用户的焦点。
+        if (com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE && !mainScreenOn()) createMirageDisplay(surface, width, height, dpi)?.let { return it }
         val flags = displayFlags(Build.VERSION.SDK_INT, trusted)
         val vd = displayManager.createVirtualDisplay("mika-agent", width, height, dpi, surface, flags)
         val (id, group) = try {
@@ -120,12 +124,75 @@ class ShellService(
             vd.release()
             throw t
         }
-        synchronized(displays) { displays[id] = vd }
+        synchronized(displays) { displays[id] = { vd.release() } }
         try {
             setFullscreenWindowingMode(id)
             ensureOrientationWatch()
             setImePolicy(id)
             if (DisplayAwake.needed(flags, FLAG_OWN_DISPLAY_GROUP, group)) awake.start(id)
+            return id
+        } catch (t: Throwable) {
+            releaseDisplay(id)
+            throw t
+        }
+    }
+
+    /**
+     * ColorOS 16 的普通虚拟屏(带 OWN_DISPLAY_GROUP 也一样)都被分进默认组,主屏熄屏、锁屏时跟着灭,出不了帧。
+     * 系统自己的「后台流转」屏(OplusMirageWindowManager,castMode 4)可以要独立显示组:建出来是 TRUSTED、
+     * OWN_DISPLAY_GROUP、ALWAYS_UNLOCKED,自成 power group,由系统持唤醒锁,主屏照样熄着、锁着。
+     * 帧送到我们给的 Surface。建屏的进程死掉时系统按 pid 收回。不可用(非 ColorOS、接口变了、没进独立组)时返回 null,走普通虚拟屏。
+     */
+    private fun mainScreenOn(): Boolean =
+        runCatching { displayManager.getDisplay(Display.DEFAULT_DISPLAY)?.state == Display.STATE_ON }.getOrDefault(true)
+
+    @SuppressLint("PrivateApi")
+    private fun createMirageDisplay(surface: Surface, width: Int, height: Int, dpi: Int): Int? {
+        val manager = runCatching {
+            val mc = Class.forName("com.oplus.miragewindow.OplusMirageWindowManager")
+            mc to mc.getMethod("getInstance").invoke(null)!!
+        }.getOrNull() ?: return null
+        val (mc, m) = manager
+        val release = { id: Int -> runCatching { mc.getMethod("releaseVirtualDisplayDevice", Int::class.java).invoke(m, id) }
+            .onFailure { Log.w(TAG, "mirage display $id release failed", it) }; Unit }
+        val id = try {
+            val oc = Class.forName("com.oplus.miragewindow.OplusMirageOptions")
+            var o = oc.getMethod("makeBackgroundStreamModeOptions").invoke(null)
+            o = oc.getMethod("setDisplayWidth", Int::class.java).invoke(o, width)
+            o = oc.getMethod("setDisplayHeight", Int::class.java).invoke(o, height)
+            o = oc.getMethod("setDensityDpi", Int::class.java).invoke(o, dpi)
+            o = oc.getMethod("setXDpi", Float::class.java).invoke(o, dpi.toFloat())
+            o = oc.getMethod("setYDpi", Float::class.java).invoke(o, dpi.toFloat())
+            val options = oc.getMethod("toBundle").invoke(o) as android.os.Bundle
+            options.putBoolean(MIRAGE_OWN_DISPLAY_GROUP, true)
+            mc.getMethod("createVirtualDisplayDevice", android.os.Bundle::class.java).invoke(m, options) as Int
+        } catch (t: Throwable) {
+            Log.w(TAG, "mirage display unavailable", t)
+            return null
+        }
+        if (id <= Display.DEFAULT_DISPLAY) {
+            Log.w(TAG, "mirage display creation returned $id")
+            return null
+        }
+        try {
+            mc.getMethod("setMirageDisplaySurfaceById", Int::class.java, Surface::class.java).invoke(m, id, surface)
+            val group = displayGroup(id)
+            if (group == null || group <= 0) {
+                Log.w(TAG, "mirage display $id group=$group; not independent")
+                release(id)
+                return null
+            }
+            Log.i(TAG, "mirage display $id in group $group")
+        } catch (t: Throwable) {
+            Log.w(TAG, "mirage display $id setup failed", t)
+            release(id)
+            return null
+        }
+        synchronized(displays) { displays[id] = { release(id) } }
+        try {
+            setFullscreenWindowingMode(id)
+            ensureOrientationWatch()
+            setImePolicy(id)
             return id
         } catch (t: Throwable) {
             releaseDisplay(id)
@@ -182,7 +249,7 @@ class ShellService(
         }
         watch?.close()
         if (watch != null) requestedOrientations.clear()
-        vd?.release()
+        vd?.invoke()
     }
 
     /**
@@ -213,10 +280,10 @@ class ShellService(
      */
     @SuppressLint("PrivateApi")
     private fun syncDisplayOrientations() {
-        val ours = synchronized(displays) { displays.toMap() }
+        val ours = synchronized(displays) { displays.keys.toList() }
         if (ours.isEmpty()) return
         val top = allTasks().groupBy { TASK_INFO.getField("displayId").getInt(it) }
-        for ((id, vd) in ours) runCatching {
+        for (id in ours) runCatching {
             val task = top[id]?.firstOrNull() ?: return@runCatching
             val taskId = TASK_INFO.getField("taskId").getInt(task)
             val compat = runCatching { TASK_INFO.getField("appCompatTaskInfo").get(task) }.getOrNull() ?: task
@@ -225,7 +292,7 @@ class ShellService(
             if (runCatching { cls.getField("topActivityBoundsLetterboxed").getBoolean(compat) }.getOrDefault(true).not()) return@runCatching
             val width = runCatching { cls.getField("topActivityLetterboxWidth").getInt(compat) }.getOrDefault(0)
             val height = runCatching { cls.getField("topActivityLetterboxHeight").getInt(compat) }.getOrDefault(0)
-            val display = vd.display
+            val display = displayManager.getDisplay(id) ?: return@runCatching
             val mode = display.mode
             val rotation = DisplayOrientation.rotation(
                 mode.physicalWidth, mode.physicalHeight, display.rotation, width, height,
@@ -1649,7 +1716,7 @@ class ShellService(
             displays.values.toList().also { displays.clear() } to orientationWatch.also { orientationWatch = null }
         }
         watch?.close()
-        all.forEach { it.release() }
+        all.forEach { it() }
     }
 
     override fun destroy() {
@@ -1806,6 +1873,8 @@ class ShellService(
         private const val FLAG_DESTROY_CONTENT_ON_REMOVAL = 1 shl 8
         private const val FLAG_TRUSTED = 1 shl 10
         private const val FLAG_OWN_DISPLAY_GROUP = 1 shl 11
+        /** ColorOS 流转屏选项里要独立显示组的键(OplusMirageDisplayInfo.createFromMirageOptions 读它)。 */
+        private const val MIRAGE_OWN_DISPLAY_GROUP = "mirage:ownDisplayGroup"
         private const val FLAG_ALWAYS_UNLOCKED = 1 shl 12
         private const val FLAG_TOUCH_FEEDBACK_DISABLED = 1 shl 13
         private const val FLAG_OWN_FOCUS = 1 shl 14
