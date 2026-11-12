@@ -92,7 +92,9 @@ object Prerequisites {
             if (status.sdkInt >= MIN_SDK && status.builtinShell != BuiltinShellStatus.Running) {
                 add(Problem.PhoneHelper(status.builtinShell))
             }
-            if (status.sdkInt >= MIN_SDK && status.accessibility != AccessibilityState.On) {
+            // root 显示后端(实验构建)截图、点按都走 root 助手,不用无障碍
+            if (status.sdkInt >= MIN_SDK && status.accessibility != AccessibilityState.On &&
+                !com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE) {
                 add(Problem.Accessibility(status.accessibility, status.userLocked, status.restrictedSettings))
             }
             if (!hasMainModel) add(Problem.NoModel)

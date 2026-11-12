@@ -58,7 +58,8 @@ internal class Tap(f: ScreenFamily) : ScreenTool(f, "tap") {
 
     override suspend fun execute(a: Args, ctx: ToolContext): ToolExecution {
         val ref = a.ref(located = true)
-        val x = a.coord("x"); val y = a.coord("y")
+        // 有的模型把可选参数全填上:给了编号就以编号为准,一起带来的坐标不用
+        val x = if (ref != null) null else a.coord("x"); val y = if (ref != null) null else a.coord("y")
         val clicks = a.int("clicks", 1, 2) ?: 1
         val target = a.str("target", max = 80)
         // 执行入口已把描述换成编号;走到这里还带着描述说明没经执行入口,不猜
@@ -66,9 +67,7 @@ internal class Tap(f: ScreenFamily) : ScreenTool(f, "tap") {
         if (ref == null && ctx.described && target == null) {
             throw ArgError("target", "required for a coordinate tap after ${family.tool("describe")}: say what you are tapping")
         }
-        if (ref != null) {
-            if (x != null || y != null) throw ArgError("x", "give either ref+snapshotId or x+y, not both")
-        } else {
+        if (ref == null) {
             if (x == null) throw ArgError("x", "required with y when no ref is given")
             if (y == null) throw ArgError("y", "required with x when no ref is given")
         }

@@ -463,11 +463,13 @@ internal class ScreenSession(
     private fun unreadable(s: ScreenSnapshot): String? {
         val app = s.unreadableApp ?: return null
         if (s.elements.any { it.meaningful }) return null
+        if (s.visualOnly) return Feedback.format("visual_only_window", "app" to app)
         return Feedback.format("unreadable_window", "app" to app)
     }
 
     /** 窗口不可读但截图可用时,保留「不要重复启动」,后续路线改用这棵树的 OCR/视觉回退。 */
     private fun unreadableHint(s: ScreenSnapshot, tree: TreeCheck, ocrStatus: String?): String {
+        if (s.visualOnly) return unreadable(s)!!
         val fallback = treeHint(tree, ocrStatus) ?: return unreadable(s)!!
         return Feedback.format("unreadable_window.fallback", "app" to s.unreadableApp!!, "fallback" to fallback)
     }

@@ -93,6 +93,8 @@ data class ScreenSnapshot(
     val opened: OpenedElsewhere? = null,
     /** 画面不可用但不是已证实的防截屏;见上方 [captureError] 说明。 */
     val captureError: String? = null,
+    /** 这块屏只能看截图(root 显示后端):没有元素是常态,不是读不到;截到画面时为 true。 */
+    val visualOnly: Boolean = false,
 )
 
 /**

@@ -10,6 +10,8 @@ sealed interface VisualInput {
     data class Tap(val x: Int, val y: Int) : VisualInput
     data class Swipe(val x1: Int, val y1: Int, val x2: Int, val y2: Int, val durationMs: Long) : VisualInput
     data class Key(val keyCode: Int) : VisualInput
+    /** 经剪贴板粘贴到拿着焦点的输入框(Ctrl+V),粘完还原用户剪贴板。 */
+    data class Paste(val text: String) : VisualInput
 }
 
 enum class VisualDispatch { Sent, NotSent, Uncertain }

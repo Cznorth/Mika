@@ -227,8 +227,9 @@ internal class Interfaces(
             if (DESCRIBED_ROLE in args) return Described.Failed(fail("invalid_arguments", "$DESCRIBED_ROLE: only used together with $DESCRIBED_ELEMENT"))
             return null
         }
-        DESCRIBED_CONFLICTS.firstOrNull { it in args }?.let {
-            return Described.Failed(fail("invalid_arguments", "$DESCRIBED_ELEMENT: give either $DESCRIBED_ELEMENT or $it, not both"))
+        // 有的模型把可选参数全填上:给了编号或坐标就以它为准,描述不用
+        if (DESCRIBED_CONFLICTS.any { it in args }) {
+            return Described.Resolved(JsonObject(args.filterKeys { it != DESCRIBED_ELEMENT && it != DESCRIBED_ROLE }), null)
         }
         val role = args.argStr(DESCRIBED_ROLE)?.trim()?.ifEmpty { null }
         // 内部读的一屏:模型没看到,不算它读过(不清掉「手里那屏已过时」);这一屏留给接着的动作当「动作前」

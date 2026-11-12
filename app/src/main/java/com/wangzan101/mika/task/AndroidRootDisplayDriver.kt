@@ -3,7 +3,12 @@ package com.wangzan101.mika.task
 import com.wangzan101.mika.cap.phone.display.AgentDisplay
 import com.wangzan101.mika.core.uistate.*
 import com.wangzan101.mika.shell.IMikaShell
+import android.view.KeyEvent
+import com.wangzan101.mika.cap.phone.shell.AsciiTextKeys
+import com.wangzan101.mika.cap.phone.shell.ShellService
 import java.util.UUID
+
+private const val PASTE_SETTLE_MS = 600L
 
 internal interface RootDisplayDevice {
     val displayId: Int
@@ -14,6 +19,7 @@ internal interface RootDisplayDevice {
     fun tap(target: RootDisplayTarget, x: Int, y: Int): Int
     fun swipe(target: RootDisplayTarget, input: VisualInput.Swipe): Int
     fun key(target: RootDisplayTarget, keyCode: Int): Int
+    fun paste(target: RootDisplayTarget, text: String): Int = 0
 }
 
 private class AndroidDisplayDevice(private val shell: IMikaShell, private val display: AgentDisplay) : RootDisplayDevice {
@@ -25,6 +31,21 @@ private class AndroidDisplayDevice(private val shell: IMikaShell, private val di
     override fun tap(target: RootDisplayTarget, x: Int, y: Int) = shell.rootTap(target.displayId, target.taskId, target.packageName, x, y)
     override fun swipe(target: RootDisplayTarget, input: VisualInput.Swipe) = shell.rootSwipe(target.displayId, target.taskId, target.packageName, input.x1, input.y1, input.x2, input.y2, input.durationMs.toInt())
     override fun key(target: RootDisplayTarget, keyCode: Int) = shell.rootKey(target.displayId, target.taskId, target.packageName, keyCode)
+    override fun paste(target: RootDisplayTarget, text: String): Int {
+        // 锁屏时系统不让任何 App 读剪贴板(粘不进去):纯 ASCII 改按键逐个打,其余只能等解锁
+        if (shell.setClipText(text) != ShellService.CLIP_SET) {
+            return if (AsciiTextKeys.supports(text)) shell.injectAsciiText(target.displayId, target.taskId, target.packageName, text)
+            else AsciiTextKeys.NOT_SENT
+        }
+        try {
+            if (shell.topTaskId(target.displayId) != target.taskId) return AsciiTextKeys.NOT_SENT
+            return shell.injectCtrlKey(target.displayId, KeyEvent.KEYCODE_V)
+        } finally {
+            // 应用读剪贴板是异步的:等它粘完再还原
+            Thread.sleep(PASTE_SETTLE_MS)
+            runCatching { shell.restoreClip() }
+        }
+    }
 }
 
 /** Display-wide capture and UID-targeted input; no window-level isolation is implied. */
@@ -53,6 +74,7 @@ internal class AndroidRootDisplayDriver(
                     device.swipe(target, input)
                 }
                 is VisualInput.Key -> device.key(target, input.keyCode)
+                is VisualInput.Paste -> if (input.text.isEmpty()) return VisualDispatch.NotSent else device.paste(target, input.text)
             }
             when (result) { 0 -> VisualDispatch.NotSent; 1 -> VisualDispatch.Sent; else -> VisualDispatch.Uncertain }
         } catch (_: Exception) { VisualDispatch.Uncertain }

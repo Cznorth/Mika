@@ -78,7 +78,7 @@ class ActionExecutor(
         println("MikaAction run_start name=${given.name}")
         // 有的模型/网关把可选参数全填上(空串):空串当没给,免得 ref:"" 和 element:"" 被当成「两个都给了」
         val parsed = parseArgs(given.argsJson)
-        val args = withoutBlankStrings(parsed)
+        val args = withoutBlankStrings(parsed, keepBlankText = !given.name.endsWith("find_visually"))
         val call = if (args === parsed) given else given.copy(argsJson = args.toString())
         println("MikaAction args_parsed name=${call.name}")
         // 不动屏幕的工具(沙箱一类):不进屏幕守卫,由各自的守卫另管
@@ -377,9 +377,12 @@ class ActionExecutor(
     }
 }
 
-/** 去掉值为空白字符串的顶层参数;要输入的文字(text)空串可能有意义,不动。没有要去的原样返回。 */
-internal fun withoutBlankStrings(o: JsonObject): JsonObject {
-    val blank = o.filter { (k, v) -> k !in KEEP_BLANK && v is JsonPrimitive && v.isString && v.content.isBlank() }.keys
+/**
+ * 去掉值为空白字符串的顶层参数;要输入的文字(text)空串可能有意义,不动。没有要去的原样返回。
+ * 看图找东西时 text 是「要找的字」,空串只是模型把可选参数填满了,照样去掉([keepBlankText] 为 false)。
+ */
+internal fun withoutBlankStrings(o: JsonObject, keepBlankText: Boolean = true): JsonObject {
+    val blank = o.filter { (k, v) -> (k !in KEEP_BLANK || !keepBlankText) && v is JsonPrimitive && v.isString && v.content.isBlank() }.keys
     return if (blank.isEmpty()) o else JsonObject(o.filterKeys { it !in blank })
 }
 

@@ -72,6 +72,9 @@ No web page is open yet. Open one with web_navigate; this is not a fault.
 ## unreadable_window
 {{app}} is open in the foreground, but its window cannot be read right now (a secure, splash or special window, or one shown elsewhere). The app did launch: do not launch it again. Wait a moment and look once more; if it is still unreadable, press back once, and if that does not help, call hand_to_user.
 
+## visual_only_window
+{{app}} is open on Mika's own screen. This screen is read from screenshots only: it never has an element list, and that is normal here, not a failure. Do not launch the app again and do not hand to the user because there are no elements. Look at the screenshot (phone_screenshot), find things with phone_find_visually, tap with phone_tap x/y on the 0–999 grid, then take another screenshot to see what changed.
+
 ## unreadable_window.fallback
 {{app}} is open in the foreground, but its window cannot be read right now; do not launch it again. {{fallback}}
 

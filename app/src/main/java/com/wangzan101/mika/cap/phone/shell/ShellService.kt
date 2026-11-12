@@ -104,27 +104,47 @@ class ShellService(
     }
 
     private fun createVirtualDisplay(surface: Surface, width: Int, height: Int, dpi: Int, trusted: Boolean): Int {
-        // 流转屏没有 STEAL_TOP_FOCUS_DISABLED,在它上面启动、点按会把焦点从主屏抢走;只在主屏没亮(熄屏、锁屏)时用。
-        // 主屏亮着时普通虚拟屏跟着主屏亮,够用,也不抢用户的焦点。
-        if (com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE && !mainScreenOn()) createMirageDisplay(surface, width, height, dpi)?.let { return it }
         val flags = displayFlags(Build.VERSION.SDK_INT, trusted)
         val vd = displayManager.createVirtualDisplay("mika-agent", width, height, dpi, surface, flags)
-        val (id, group) = try {
-            val id = vd.display.displayId
-            val group = displayGroup(id)
+        var attached = false
+        val id = vd.display.displayId
+        val group = try {
+            var group = displayGroup(id)
             check(id > Display.DEFAULT_DISPLAY && group != null) { "display group unavailable: display=$id group=$group" }
+            // ColorOS 16 无视 OWN_DISPLAY_GROUP,普通虚拟屏都进默认组。把这块屏登记成系统的「后台流转」屏
+            // (见 [attachMirage]),再改一下尺寸让系统重新分组,它就自成一组:主屏熄屏、锁屏时照常出帧,
+            // 而且保留我们的 STEAL_TOP_FOCUS_DISABLED,用户用着手机时也不抢焦点。
+            if (group <= 0 && com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE && attachMirage(id, width, height, dpi)) {
+                attached = true
+                vd.resize(width, height, dpi + 1)
+                vd.resize(width, height, dpi)
+                group = waitForGroup(id)
+                if (group == null || group <= 0) {
+                    Log.w(TAG, "display $id stayed in group $group after mirage attach")
+                    detachMirage(id)
+                    attached = false
+                } else Log.i(TAG, "display $id moved to independent group $group")
+            }
+            check(group != null) { "display group unavailable: display=$id" }
             // ColorOS 16 把 OWN_DISPLAY_GROUP 的屏也放进默认组(0):跟着主屏亮灭,主屏灭时出不了帧。
             // 实验构建里先接受它(主屏亮着时能用),正式构建仍要独立组。
             if (group <= 0) {
                 check(com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE) { "independent display group unavailable: display=$id group=$group" }
                 Log.w(TAG, "display $id landed in default group; follows main screen power")
             }
-            id to group
+            if (group <= 0 && !mainScreenOn()) {
+                // 登记不上而主屏又没亮:这块屏出不了帧,改用系统建的流转屏
+                vd.release()
+                createMirageDisplay(surface, width, height, dpi)?.let { return it }
+                error("no frames: display=$id stays in default group while the main screen is off")
+            }
+            group
         } catch (t: Throwable) {
+            if (attached) detachMirage(id)
             vd.release()
             throw t
         }
-        synchronized(displays) { displays[id] = { vd.release() } }
+        synchronized(displays) { displays[id] = { if (attached) detachMirage(id); vd.release() } }
         try {
             setFullscreenWindowingMode(id)
             ensureOrientationWatch()
@@ -143,29 +163,67 @@ class ShellService(
      * OWN_DISPLAY_GROUP、ALWAYS_UNLOCKED,自成 power group,由系统持唤醒锁,主屏照样熄着、锁着。
      * 帧送到我们给的 Surface。建屏的进程死掉时系统按 pid 收回。不可用(非 ColorOS、接口变了、没进独立组)时返回 null,走普通虚拟屏。
      */
+    /** 改尺寸后系统异步重新分组:最多等 1 秒。 */
+    private fun waitForGroup(id: Int): Int? {
+        var group = displayGroup(id)
+        var waited = 0
+        while ((group == null || group <= 0) && waited < 1000) {
+            Thread.sleep(50); waited += 50
+            group = displayGroup(id)
+        }
+        return group
+    }
+
+    private val mirageManager: Pair<Class<*>, Any>? by lazy {
+        runCatching {
+            val mc = Class.forName("com.oplus.miragewindow.OplusMirageWindowManager")
+            mc to mc.getMethod("getInstance").invoke(null)!!
+        }.getOrNull()
+    }
+
+    @SuppressLint("PrivateApi")
+    private fun mirageOptions(width: Int, height: Int, dpi: Int, existing: Int?): android.os.Bundle {
+        val oc = Class.forName("com.oplus.miragewindow.OplusMirageOptions")
+        var o = oc.getMethod("makeBackgroundStreamModeOptions").invoke(null)
+        if (existing != null) {
+            o = oc.getMethod("setDisplayId", Int::class.java).invoke(o, existing)
+            o = oc.getMethod("setCreateVirtualDisplayUpdate", Boolean::class.java).invoke(o, true)
+        }
+        o = oc.getMethod("setDisplayWidth", Int::class.java).invoke(o, width)
+        o = oc.getMethod("setDisplayHeight", Int::class.java).invoke(o, height)
+        o = oc.getMethod("setDensityDpi", Int::class.java).invoke(o, dpi)
+        o = oc.getMethod("setXDpi", Float::class.java).invoke(o, dpi.toFloat())
+        o = oc.getMethod("setYDpi", Float::class.java).invoke(o, dpi.toFloat())
+        return (oc.getMethod("toBundle").invoke(o) as android.os.Bundle).apply { putBoolean(MIRAGE_OWN_DISPLAY_GROUP, true) }
+    }
+
+    /** 把自己建的虚拟屏 [id] 登记成后台流转屏、要独立显示组;非 ColorOS 或接口不对时 false。 */
+    private fun attachMirage(id: Int, width: Int, height: Int, dpi: Int): Boolean {
+        val (mc, m) = mirageManager ?: return false
+        return try {
+            val ret = mc.getMethod("createVirtualDisplayDevice", android.os.Bundle::class.java).invoke(m, mirageOptions(width, height, dpi, id)) as Int
+            (ret == id).also { if (!it) Log.w(TAG, "mirage attach of display $id returned $ret") }
+        } catch (t: Throwable) {
+            Log.w(TAG, "mirage attach unavailable", t)
+            false
+        }
+    }
+
+    private fun detachMirage(id: Int) {
+        val (mc, m) = mirageManager ?: return
+        runCatching { mc.getMethod("releaseVirtualDisplayDevice", Int::class.java).invoke(m, id) }
+            .onFailure { Log.w(TAG, "mirage detach of display $id failed", it) }
+    }
+
     private fun mainScreenOn(): Boolean =
         runCatching { displayManager.getDisplay(Display.DEFAULT_DISPLAY)?.state == Display.STATE_ON }.getOrDefault(true)
 
-    @SuppressLint("PrivateApi")
+    /** 系统自己建的后台流转屏(没有 STEAL_TOP_FOCUS_DISABLED,只在主屏没亮时用);不可用时 null。 */
     private fun createMirageDisplay(surface: Surface, width: Int, height: Int, dpi: Int): Int? {
-        val manager = runCatching {
-            val mc = Class.forName("com.oplus.miragewindow.OplusMirageWindowManager")
-            mc to mc.getMethod("getInstance").invoke(null)!!
-        }.getOrNull() ?: return null
-        val (mc, m) = manager
-        val release = { id: Int -> runCatching { mc.getMethod("releaseVirtualDisplayDevice", Int::class.java).invoke(m, id) }
-            .onFailure { Log.w(TAG, "mirage display $id release failed", it) }; Unit }
+        val (mc, m) = mirageManager ?: return null
+        val release = { id: Int -> detachMirage(id) }
         val id = try {
-            val oc = Class.forName("com.oplus.miragewindow.OplusMirageOptions")
-            var o = oc.getMethod("makeBackgroundStreamModeOptions").invoke(null)
-            o = oc.getMethod("setDisplayWidth", Int::class.java).invoke(o, width)
-            o = oc.getMethod("setDisplayHeight", Int::class.java).invoke(o, height)
-            o = oc.getMethod("setDensityDpi", Int::class.java).invoke(o, dpi)
-            o = oc.getMethod("setXDpi", Float::class.java).invoke(o, dpi.toFloat())
-            o = oc.getMethod("setYDpi", Float::class.java).invoke(o, dpi.toFloat())
-            val options = oc.getMethod("toBundle").invoke(o) as android.os.Bundle
-            options.putBoolean(MIRAGE_OWN_DISPLAY_GROUP, true)
-            mc.getMethod("createVirtualDisplayDevice", android.os.Bundle::class.java).invoke(m, options) as Int
+            mc.getMethod("createVirtualDisplayDevice", android.os.Bundle::class.java).invoke(m, mirageOptions(width, height, dpi, null)) as Int
         } catch (t: Throwable) {
             Log.w(TAG, "mirage display unavailable", t)
             return null

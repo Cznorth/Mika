@@ -242,5 +242,6 @@ private fun withHint(r: ToolExecution, hint: String): ToolExecution {
 private suspend fun unreadable(ctx: ToolContext, p: String, r: ToolExecution): ToolExecution {
     val s = ctx.session.peek()
     if (s?.unreadableApp != p || s.elements.any { it.meaningful }) return r
+    if (s.visualOnly) return withHint(r, Feedback.format("visual_only_window", "app" to p))
     return withHint(ToolExecution(JsonObject(r.content + ("readable" to JsonPrimitive(false))), changed = r.changed), Feedback.format("unreadable_window", "app" to p))
 }

@@ -57,9 +57,9 @@ private sealed interface FieldAim {
  */
 private suspend fun aim(a: Args, ctx: ToolContext): Pair<FieldAim?, ToolExecution?> {
     val ref = a.ref(located = true)
-    val x = a.coord("x")
-    val y = a.coord("y")
-    if (ref != null && (x != null || y != null)) throw ArgError("x", "give either ref+snapshotId or x+y, not both")
+    // 有的模型把可选参数全填上:给了编号就以编号为准,一起带来的坐标不用
+    val x = if (ref != null) null else a.coord("x")
+    val y = if (ref != null) null else a.coord("y")
     if ((x == null) != (y == null)) throw ArgError(if (x == null) "x" else "y", "x and y go together")
     if (ref != null && LOCATED_REF.matches(ref.first)) {
         val p = locatedPixel(ctx, ref.first, ref.second) ?: return null to refExpired(Feedback["located_stale"], "located_stale")

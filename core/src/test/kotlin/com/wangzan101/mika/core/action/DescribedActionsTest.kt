@@ -90,11 +90,12 @@ class DescribedActionsTest {
         assertEquals(listOf("tap @e4"), screen.calls)
     }
 
-    @Test fun descriptionWithARefIsRejected() = runTest {
+    // 模型把可选参数全填上时以编号为准,描述不用,不再报参数冲突
+    @Test fun descriptionWithARefUsesTheRef() = runTest {
         val screen = Shop()
         val c = content(run(executor(toolDispatcher(screen)), "phone_tap", """{"element":"登录","ref":"@e1","snapshotId":"s1"}"""))
-        assertEquals(JsonPrimitive("invalid_arguments"), c["error"])
-        assertTrue(screen.calls.isEmpty())
+        assertTrue(c["error"] != JsonPrimitive("invalid_arguments"))
+        assertTrue(screen.calls.none { it.startsWith("tap") && it != "tap @e1" })
     }
 
     @Test fun partialMatchSaysWhatItResolvedTo() = runTest {

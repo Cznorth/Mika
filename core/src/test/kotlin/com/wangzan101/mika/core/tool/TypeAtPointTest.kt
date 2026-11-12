@@ -106,9 +106,12 @@ class TypeAtPointTest {
         assertTrue(s.calls.isEmpty())
     }
 
-    @Test fun refAndPointTogetherAreRejected() = runTest {
-        val r = d(PointScreen()).execute(call("phone_type_text", """{"text":"hi","ref":"@e1","snapshotId":"s","x":1,"y":2}""")).content
-        assertEquals("invalid_arguments", r.s("error"))
+    // 有的模型把可选参数全填上:给了编号就以编号为准,一起带来的坐标不用(不再报参数冲突)
+    @Test fun refWinsOverPointGivenTogether() = runTest {
+        val s = PointScreen()
+        val r = d(s).execute(call("phone_type_text", """{"text":"hi","ref":"@e1","snapshotId":"s","x":1,"y":2}""")).content
+        assertTrue(r["error"]?.jsonPrimitive?.content != "invalid_arguments")
+        assertTrue(s.calls.none { it.startsWith("typeAt") })
     }
 
     @Test fun pointTypingJudgesTheTapToo() {

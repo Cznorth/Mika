@@ -691,6 +691,7 @@ class TaskRun(
                                 },
                                 apps = { withContext(Dispatchers.IO) { launchableApps(service.packageManager, service.packageName) } },
                                 width = display.width, height = display.height,
+                                openView = { action, uri, pkg -> withContext(Dispatchers.IO) { shell.startView(display.displayId, action, uri, pkg) } },
                             )
                         },
                     ).also { rootScreen = it }
@@ -736,7 +737,8 @@ class TaskRun(
             val taskGate = TaskGate(states.locked, shellUp,
                 refreshLocked = states::refresh,
                 // Dev-only experiment for remotely dispatched tasks. The normal build retains the lock gate.
-                allowLockedPhone = { com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE && mcpExternalId != null },
+                // 实验构建的 Mika 屏自成一组、ALWAYS_UNLOCKED,锁屏时照常操作,不用等用户解锁
+                allowLockedPhone = { com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE },
                 unattendedUnlock = unlockAuthorized?.let { authorized ->
                     {
                         val result = app.deviceAccess.access.unlock(authorized)
@@ -924,7 +926,8 @@ class TaskRun(
                 // 助手断开、被挪走只在这一步用的是手机时才查
                 gate = { w ->
                     if (phoneScreen.acquired && dispatcher?.surface != WEB) phone?.screen?.let { awaitUserPick(it, taskGate, w) }
-                    taskGate.pass({ phoneScreen.acquired && dispatcher?.surface != WEB }, w)
+                    // 手机屏第一次用到时才接上:实验构建允许锁屏操作手机时,接上之前的第一步(打开 App)也按手机算,不然永远等解锁
+                    taskGate.pass({ (phoneScreen.acquired || com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE) && dispatcher?.surface != WEB }, w)
                 }, knowledge = knowledge, sink = sink, trace = trace, installedApps = { apps },
                 // 选渠道用的事实:装了哪些 App、在 Mika 里登录过哪些网站、有没有内置浏览器
                 channelFacts = {
