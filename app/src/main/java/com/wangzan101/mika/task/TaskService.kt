@@ -74,6 +74,13 @@ internal fun Notification.Builder.alertQuietly(): Notification.Builder =
 private const val QUIET_GROUP = "com.wangzan101.mika.quiet"
 
 /**
+ * 手机屏幕灭着(用户多半在睡觉或手机在口袋里):Mika 的通知一律安静进通知栏([alertQuietly]),
+ * 不响、不弹横幅,也不让系统(ColorOS「通知亮屏」、息屏显示的通知唤醒)为它点亮屏幕。亮着时照旧提醒。
+ */
+internal fun screenDark(context: Context): Boolean =
+    context.getSystemService(android.os.PowerManager::class.java)?.isInteractive == false
+
+/**
  * 前台服务:在 Agent 虚拟屏上跑任务,单个任务的状态与执行在 [TaskRun],运行中的任务登记在 [TaskRegistry]。
  * 开关 parallelTasks 关着时同一时间只跑一个,别的对话交来的任务排在后面(不论从哪里交来,都不丢);
  * 打开时不同对话的任务可以同时跑,各占一块虚拟屏,上限见 [ParallelCapability],超出的排队。
@@ -776,7 +783,8 @@ class TaskService : Service() {
      */
     private fun attentionNotification(run: TaskRun, state: TaskState): Notification? {
         if (!awaitingUser(run, state)) return null
-        val quiet = (application as com.wangzan101.mika.MikaApp).capsule.showing.value
+        // 胶囊亮着时已经变橙;屏幕灭着时不能为这条通知把屏幕点亮
+        val quiet = (application as com.wangzan101.mika.MikaApp).capsule.showing.value || screenDark(this)
         if (state is TaskState.WaitingConfirmation) {
             return ConfirmationNotifier.build(
                 this, CHANNEL_ATTENTION, state, TaskService::class.java, ACTION_APPROVE, ACTION_DECLINE, openApp(),
@@ -947,6 +955,8 @@ class TaskService : Service() {
         /** 结果与提示发成通知(服务里的与 App 启动时恢复用的共用);[resultId] 是结果通知的编号。 */
         internal fun notifyDelivery(context: Context, delivery: Delivery, resultId: Int): SendOutcome {
             val nm = context.getSystemService(NotificationManager::class.java)
+            // 屏幕灭着时结果安静进通知栏,不把屏幕点亮(见 [screenDark])
+            val dark = screenDark(context)
             when (delivery) {
                 is Delivery.Result -> nm.notify(resultId, Notification.Builder(context, CHANNEL_RESULT)
                     .setSmallIcon(R.drawable.ic_notification)
@@ -955,10 +965,12 @@ class TaskService : Service() {
                     .setStyle(Notification.BigTextStyle().bigText(delivery.text))
                     .setContentIntent(openApp(context, delivery.threadId))
                     .setAutoCancel(true)
+                    .apply { if (dark) alertQuietly() }
                     .build())
                 is Delivery.Notice -> nm.notify(nextResultId(), Notification.Builder(context, CHANNEL_RESULT)
                     .setSmallIcon(R.drawable.ic_notification).setContentTitle("Mika")
-                    .setContentText(delivery.text).setContentIntent(openApp(context, delivery.threadId)).setAutoCancel(true).build())
+                    .setContentText(delivery.text).setContentIntent(openApp(context, delivery.threadId)).setAutoCancel(true)
+                    .apply { if (dark) alertQuietly() }.build())
                 is Delivery.Ask, is Delivery.Progress -> {}
             }
             return SendOutcome.Delivered
