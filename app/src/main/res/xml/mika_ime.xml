@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 锁屏时提交中文用的临时输入法,无键盘界面,见 MikaImeService -->
+<input-method xmlns:android="http://schemas.android.com/apk/res/android"
+    android:isDefault="false"
+    android:supportsSwitchingToNextInputMethod="false" />

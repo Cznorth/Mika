@@ -6,6 +6,7 @@ import com.wangzan101.mika.shell.IMikaShell
 import android.view.KeyEvent
 import com.wangzan101.mika.cap.phone.shell.AsciiTextKeys
 import com.wangzan101.mika.cap.phone.shell.ShellService
+import com.wangzan101.mika.BuildConfig
 import java.util.UUID
 
 private const val PASTE_SETTLE_MS = 600L
@@ -32,10 +33,11 @@ private class AndroidDisplayDevice(private val shell: IMikaShell, private val di
     override fun swipe(target: RootDisplayTarget, input: VisualInput.Swipe) = shell.rootSwipe(target.displayId, target.taskId, target.packageName, input.x1, input.y1, input.x2, input.y2, input.durationMs.toInt())
     override fun key(target: RootDisplayTarget, keyCode: Int) = shell.rootKey(target.displayId, target.taskId, target.packageName, keyCode)
     override fun paste(target: RootDisplayTarget, text: String): Int {
-        // 锁屏时系统不让任何 App 读剪贴板(粘不进去):纯 ASCII 改按键逐个打,其余只能等解锁
+        // 锁屏时系统不让任何 App 读剪贴板(粘不进去):纯 ASCII 改按键逐个打,其余临时切到 Mika 输入法直接提交
         if (shell.setClipText(text) != ShellService.CLIP_SET) {
-            return if (AsciiTextKeys.supports(text)) shell.injectAsciiText(target.displayId, target.taskId, target.packageName, text)
-            else AsciiTextKeys.NOT_SENT
+            if (AsciiTextKeys.supports(text)) return shell.injectAsciiText(target.displayId, target.taskId, target.packageName, text)
+            if (shell.topTaskId(target.displayId) != target.taskId) return AsciiTextKeys.NOT_SENT
+            return MikaImeService.type(shell, BuildConfig.APPLICATION_ID, target.packageName, text)
         }
         try {
             if (shell.topTaskId(target.displayId) != target.taskId) return AsciiTextKeys.NOT_SENT

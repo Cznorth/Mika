@@ -186,6 +186,20 @@
                 android:resource="@xml/accessibility_service" />
         </service>
 
+        <!-- 锁屏时把中文提交进 Mika 虚拟屏的编辑框:root 助手临时切过来,提交完切回(见 MikaImeService) -->
+        <service
+            android:name=".task.MikaImeService"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:permission="android.permission.BIND_INPUT_METHOD">
+            <intent-filter>
+                <action android:name="android.view.InputMethod" />
+            </intent-filter>
+            <meta-data
+                android:name="android.view.im"
+                android:resource="@xml/mika_ime" />
+        </service>
+
         <service
             android:name=".task.TaskService"
             android:exported="false"
