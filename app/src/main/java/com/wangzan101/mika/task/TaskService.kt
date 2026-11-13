@@ -242,25 +242,9 @@ class TaskService : Service() {
         }
     }
 
-    /**
-     * 有任务在跑时请 root 身份的内置助手撑着,别让系统(ColorOS 的 Hans)在熄屏后把 Mika 断网、冻住;
-     * 没任务了就撤。助手换了(重连)时在新的那个上重新开。助手不是 root 或是旧版本时什么也不做。
-     */
+    /** 有任务在跑(含排队、等待)时请 root 助手撑着,别让系统在熄屏后把 Mika 断网、冻住,见 [KeepAlive]。 */
     private fun followBackgroundGuard() {
-        val hub = runCatching { com.wangzan101.mika.cap.phone.PhoneServices.of(this).hub }.getOrNull() ?: return
-        scope.launch(Dispatchers.IO) {
-            var on: com.wangzan101.mika.shell.IMikaShell? = null
-            kotlinx.coroutines.flow.combine(taskState.busy, hub.shell) { busy, shell -> if (busy) shell else null }
-                .collect { want ->
-                    if (want === on) return@collect
-                    on?.let { old -> runCatching { old.keepTaskAlive(packageName, false) } }
-                    on = want?.takeIf { s ->
-                        val code = runCatching { s.keepTaskAlive(packageName, true) }.getOrDefault(-1)
-                        Log.i(TAG, "background guard on=$code")
-                        code == 0
-                    }
-                }
-        }
+        scope.launch { taskState.busy.collect { KeepAlive.set(this@TaskService, KeepAlive.REASON_TASK, it) } }
     }
 
     private fun waitKeyOf(intent: Intent) = intent.getIntExtra(EXTRA_WAIT_KEY, -1).takeIf { it >= 0 }
@@ -946,8 +930,7 @@ class TaskService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
-        // 服务没了就不再撑着(助手那边的叫停只是结束一个线程,不会卡住主线程)
-        runCatching { com.wangzan101.mika.cap.phone.PhoneServices.of(this).hub.shell.value?.keepTaskAlive(packageName, false) }
+        KeepAlive.set(this, KeepAlive.REASON_TASK, false)
         // 服务没了就撑不住进程:留着的那一页如实关掉,对话里记下
         keeper.close(KeptPageClose.AppExit)
         getSystemService(NotificationManager::class.java).cancel(ID_KEPT)

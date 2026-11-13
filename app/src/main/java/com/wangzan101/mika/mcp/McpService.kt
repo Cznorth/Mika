@@ -44,6 +44,8 @@ class McpService : Service() {
         }.onFailure { Log.w("MikaMcp", "computer access service could not enter the foreground", it) }.isSuccess
         val ready = foreground && !FeatureFlags.get(this).quitRequested() && applied && runCatching { runtime.sync() }
             .onFailure { Log.w("MikaMcp", "could not start computer access", it) }.getOrDefault(false)
+        // 电脑随时会来派任务、查状态:开着期间别让系统把 Mika 冻住、清掉
+        com.wangzan101.mika.task.KeepAlive.set(this, com.wangzan101.mika.task.KeepAlive.REASON_COMPUTER, ready)
         if (!ready) {
             runtime.stopServer()
             runtime.usb.unpublish()
@@ -55,6 +57,7 @@ class McpService : Service() {
     }
 
     override fun onDestroy() {
+        com.wangzan101.mika.task.KeepAlive.set(this, com.wangzan101.mika.task.KeepAlive.REASON_COMPUTER, false)
         runtime.stopServer()
         super.onDestroy()
     }

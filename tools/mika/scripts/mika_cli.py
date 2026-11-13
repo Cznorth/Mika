@@ -25,7 +25,22 @@ import uuid
 
 VERSION = "0.1.0"
 API = "/api/v1"
-PHONE_FILES = "/sdcard/Android/data/com.wangzan101.mika/files"
+DEFAULT_APP = "com.wangzan101.mika"
+
+
+def phone_app():
+    """Mika's package on the phone; MIKA_APP_PACKAGE selects another build such as com.wangzan101.mika.dev."""
+    app = os.environ.get("MIKA_APP_PACKAGE", "").strip() or DEFAULT_APP
+    if not re.fullmatch(r"[A-Za-z][A-Za-z0-9_]*(\.[A-Za-z0-9_]+)+", app):
+        raise CliError("arguments", "MIKA_APP_PACKAGE must be an Android package name.")
+    return app
+
+
+def phone_files():
+    return "/sdcard/Android/data/" + phone_app() + "/files"
+
+
+PHONE_FILES = "/sdcard/Android/data/" + DEFAULT_APP + "/files"
 INFO_FILE = PHONE_FILES + "/mcp-usb.json"
 CONNECT_SCRIPT = PHONE_FILES + "/connect-computer.sh"
 MAX_RESPONSE = 4 * 1024 * 1024
@@ -281,13 +296,13 @@ def connection(args, secrets):
     if args.command == "connect":
         progress(args, "running phone bootstrap...")
         try:
-            adb.run("shell", "sh", CONNECT_SCRIPT, timeout=60)
+            adb.run("shell", "sh", phone_files() + "/connect-computer.sh", timeout=60)
         except CliError as exc:
             if exc.code != "adb":
                 raise
             raise CliError("adb", "Mika's phone bootstrap did not complete. " + RETRY_HINT) from None
     try:
-        info = json.loads(adb.run("shell", "cat", INFO_FILE))
+        info = json.loads(adb.run("shell", "cat", phone_files() + "/mcp-usb.json"))
         if not isinstance(info, dict):
             raise ValueError()
     except ValueError:
