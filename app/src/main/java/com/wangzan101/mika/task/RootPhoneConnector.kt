@@ -1,5 +1,6 @@
 package com.wangzan101.mika.task
 
+import android.util.Log
 import com.wangzan101.mika.core.uistate.RootVisualBackend
 import com.wangzan101.mika.core.uistate.RootVisualScreen
 
@@ -28,8 +29,14 @@ internal suspend fun connectRootDisplayPhone(
     onConnected: suspend () -> Unit,
     enabled: Boolean = true,
 ): com.wangzan101.mika.core.uistate.RootDisplayScreen {
+    Log.i("MikaRootDisplay", "connect enabled=$enabled")
     if (!enabled) throw RootDisplayDisabled()
     initialize()
+    Log.i("MikaRootDisplay", "initialize complete; creating display backend")
     onConnected()
-    return create()
+    return runCatching { create() }.onSuccess {
+        Log.i("MikaRootDisplay", "RootDisplayScreen created")
+    }.onFailure {
+        Log.e("MikaRootDisplay", "RootDisplayScreen creation failed", it)
+    }.getOrThrow()
 }

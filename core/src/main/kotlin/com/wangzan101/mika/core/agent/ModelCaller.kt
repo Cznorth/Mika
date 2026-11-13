@@ -103,6 +103,7 @@ internal class ModelCaller(
     ): Pair<ModelReply, ChatModel> {
         val r = router?.takeIf { routing } ?: return ask(history, specs, step, onText = onText) to model
         val picked = r.pick(track.context(step, history.any { m -> m.parts.any { it is Part.Image } }))
+        println("MikaModel route step=$step picked=${picked.name} role=${if (r.isLight(picked)) "light" else "main"}")
         if (!r.isLight(picked)) return ask(history, specs, step, onText = onText) to model
         // 轻量模型的上下文可能更小:它报超长、它那次折叠多少,都不连累主模型(压缩状态按模型分开记)
         val asked = now()
@@ -166,6 +167,7 @@ internal class ModelCaller(
 
     private suspend fun complete(history: List<Message>, specs: List<ToolSpec>, using: ChatModel, policy: RetryPolicy, step: Int,
         onText: ((String) -> Unit)? = null): ModelReply {
+        println("MikaModel request_start step=$step model=${using.name} role=${if (router?.isLight(using) == true) "light" else "main"} tools=${specs.size}")
         var retries = 0
         lastRetryWaitMs = 0
         val began = now()
@@ -206,6 +208,7 @@ internal class ModelCaller(
                     overflowRewrote = false
                     trace.modelCall(step, using, tools::verb, change, sent.messages) { send() }
                 }
+                println("MikaModel request_done step=$step model=${using.name} parts=${reply.parts.size}")
                 return reply.also { r ->
                     lastOverhead[using] = overhead
                     r.usage?.let { compressor.calibrate(sent.estimate + overhead, it.inputTokens) }

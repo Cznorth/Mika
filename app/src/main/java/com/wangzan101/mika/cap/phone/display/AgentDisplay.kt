@@ -63,17 +63,21 @@ class AgentDisplay(
     }
 
     init {
+        Log.i(TAG, "creating AgentDisplay ${bufferWidth}x${bufferHeight} dpi=$dpi")
         val id = try {
             shell.createDisplay(reader.surface, bufferWidth, bufferHeight, dpi)
         } catch (t: Throwable) {
+            Log.e(TAG, "shell.createDisplay threw", t)
             closeLocal()
             throw t
         }
         if (id < 0) {
+            Log.e(TAG, "shell.createDisplay returned id=$id")
             closeLocal()
             throw IllegalStateException("createDisplay failed")
         }
         displayId = id
+        Log.i(TAG, "virtual display created id=$id")
         try {
             reader.setOnImageAvailableListener({ schedule() }, handler)
             // 建屏期间可能已经有帧排进来;先有正确的屏号,再处理这些帧。

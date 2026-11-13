@@ -98,7 +98,12 @@ class OpenAiCompatModel(
             val wire = listOf(buildJsonObject { put("role", "system"); put("content", system) }) +
                 messages.flatMap { serialize(it, replayReasoning) }
             put("messages", JsonArray(if (capabilities.promptCaching == PromptCaching.Explicit) withCacheMarks(wire) else wire))
-            if (tools.isNotEmpty()) putJsonArray("tools") { tools.forEach { add(toolJson(it)) } }
+            if (tools.isNotEmpty()) {
+                putJsonArray("tools") { tools.forEach { add(toolJson(it)) } }
+                // Some OpenAI-compatible gateways default to text-only unless the
+                // tool selection policy is explicit.
+                put("tool_choice", "auto")
+            }
             if (stream) {
                 put("stream", true)
                 if (includeUsage) putJsonObject("stream_options") { put("include_usage", true) }

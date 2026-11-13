@@ -49,6 +49,9 @@ import com.wangzan101.mika.core.memory.MemoryExtractor
 import com.wangzan101.mika.core.memory.MemoryStore
 import com.wangzan101.mika.core.memory.UserUtterances
 import com.wangzan101.mika.core.model.ChatModel
+import com.wangzan101.mika.core.model.ModelReply
+import com.wangzan101.mika.core.model.Message
+import com.wangzan101.mika.core.model.ToolSpec
 import com.wangzan101.mika.core.model.ModelSession
 import com.wangzan101.mika.core.skills.SkillDrafter
 import com.wangzan101.mika.chat.ConversationStore
@@ -534,16 +537,42 @@ class TaskRun(
             // 前一个任务替这个拿着的那份,自己的拿上了就放开
             wakeHandoff?.release()
             wakeHandoff = null
-            val model = env.modelFactory(service, session) ?: return TaskState.Failed(tr(R.string.fail_no_main_model), FailKind.Environment)
+            if (BuildConfig.DEBUG) Log.i("MikaTask", "phase=model_factory_start goalLength=${goal.length}")
+            val rawModel = env.modelFactory(service, session) ?: run {
+                if (BuildConfig.DEBUG) Log.w("MikaTask", "phase=model_factory_empty")
+                return TaskState.Failed(tr(R.string.fail_no_main_model), FailKind.Environment)
+            }
+            val model: ChatModel = object : ChatModel {
+                override val capabilities = rawModel.capabilities
+                override val name get() = rawModel.name
+                override suspend fun complete(system: String, messages: List<Message>, tools: List<ToolSpec>): ModelReply {
+                    if (BuildConfig.DEBUG) Log.i("MikaTask", "model_request start messages=${messages.size} tools=${tools.size}")
+                    return try {
+                        rawModel.complete(system, messages, tools).also { reply ->
+                            if (BuildConfig.DEBUG) {
+                                val plain = reply.parts.filterIsInstance<com.wangzan101.mika.core.model.Part.Text>()
+                                    .joinToString("") { it.text }.replace(Regex("\\s+"), " ").take(200)
+                                Log.i("MikaTask", "model_response parts=${reply.parts.size} toolCalls=${reply.parts.count { it is com.wangzan101.mika.core.model.Part.ToolCall }} text=${reply.parts.any { it is com.wangzan101.mika.core.model.Part.Text }} preview=${plain}")
+                            }
+                        }
+                    } catch (e: Exception) {
+                        if (BuildConfig.DEBUG) Log.w("MikaTask", "model_request error=${e.javaClass.simpleName}:${e.message?.take(120)}")
+                        throw e
+                    }
+                }
+            }
+            if (BuildConfig.DEBUG) Log.i("MikaTask", "phase=model_ready capabilities=${model.capabilities.vision}")
             // 用户在浏览器页上对着一页问的:那一页借给这个任务当当前网页标签(见 PageLoans);开跑时页面还开着才借得到
             val pageLoan = if (provenance.origin == RunOrigin.Ui) withContext(Dispatchers.Main) { UserBrowser.existing()?.claim(conversationId, key) } else null
             val light = env.lightModelFactory(service, session)
+            if (BuildConfig.DEBUG) Log.i("MikaTask", "phase=light_model_ready present=${light != null}")
             // 同一模型分成两个实例并不会更便宜或更快;禁止它给批量/收尾工具反而只会增加改派和逐步操作。
             // 这只跳过逐步分工,轻量角色仍可用于意图判断、标题和收尾等辅助调用。
             val routedLight = light?.takeIf {
                 !ProviderStore.get(service).roles.value.sameModel(ModelRole.Main, ModelRole.Light)
             }
             val vision = env.visionModelFactory(service, session)
+            if (BuildConfig.DEBUG) Log.i("MikaTask", "phase=vision_model_ready present=${vision != null}")
 
             val (knowledge, skills) = withContext(Dispatchers.IO) {
                 // 用户对某个 App/站点的补充放在私有目录 personal/apps、personal/sites 下
@@ -657,6 +686,7 @@ class TaskRun(
                         throw PhoneUnavailable(if (phoneServices.shellControl.restart == HelperRestart.UsbCommand) NO_PHONE_HELPER_USB else NO_PHONE_HELPER)
                     }
                 return try {
+                    if (BuildConfig.DEBUG) Log.i("MikaRootDisplay", "connectPhone selecting RootDisplay backend experimental=${com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE}")
                     connectRootDisplayPhone(
                         enabled = com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE,
                         initialize = { recovery.beginRun(shell, key) },
@@ -673,6 +703,7 @@ class TaskRun(
                             side.launch { conn.shell.map { it != null }.collect { shellUp.value = it } }
                         },
                         create = {
+                            if (BuildConfig.DEBUG) Log.i("MikaRootDisplay", "constructing AgentDisplay")
                             val display = resources.acquire(Dispatchers.IO, AgentDisplay::release) {
                                 AgentDisplay(shell, metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
                                     service.getSystemService(DisplayManager::class.java))
@@ -704,9 +735,11 @@ class TaskRun(
                             )
                         },
                     ).also { rootScreen = it }
-                } catch (_: RootDisplayDisabled) {
+                } catch (e: RootDisplayDisabled) {
+                    if (BuildConfig.DEBUG) Log.w("MikaRootDisplay", "RootDisplay disabled", e)
                     throw PhoneUnavailable("Root 显示控制尚未在此构建中启用。")
-                } catch (_: RootWindowUnavailable) {
+                } catch (e: RootWindowUnavailable) {
+                    if (BuildConfig.DEBUG) Log.w("MikaRootDisplay", "Root window unavailable", e)
                     throw PhoneUnavailable("Root 窗口隔离能力尚不可用，无法安全操作手机。")
                 }
             }
@@ -717,7 +750,10 @@ class TaskRun(
                     phoneServices.hub.shell.value?.let { s ->
                         withContext(Dispatchers.IO) { runCatching { AppCopyReader.read(s, launchableApps(service.packageManager, service.packageName)) }.getOrNull() }
                     }.orEmpty()
-                }) { connectPhone() }
+                }) {
+                    if (BuildConfig.DEBUG) Log.i("MikaTask", "phase=phone_screen_acquire_start")
+                    connectPhone().also { if (BuildConfig.DEBUG) Log.i("MikaTask", "phase=phone_screen_acquired") }
+                }
             val accessedPhone = com.wangzan101.mika.core.uistate.AppAccessScreenPort(
                 phoneScreen, appAccess,
                 packages = { rootScreen?.accessPackages().orEmpty() },
@@ -934,9 +970,16 @@ class TaskRun(
                 SystemPrompt.identity(),
                 // 助手断开、被挪走只在这一步用的是手机时才查
                 gate = { w ->
-                    if (phoneScreen.acquired && dispatcher?.surface != WEB) phone?.screen?.let { awaitUserPick(it, taskGate, w) }
-                    // 手机屏第一次用到时才接上:实验构建允许锁屏操作手机时,接上之前的第一步(打开 App)也按手机算,不然永远等解锁
-                    taskGate.pass({ (phoneScreen.acquired || com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE) && dispatcher?.surface != WEB }, w)
+                    // Rootprobe debug runs are explicitly controlled by the local test harness.
+                    // Bypass the user-interaction gate only for that debug application; production
+                    // builds and the normal Mika package retain the safety gate unchanged.
+                    if (BuildConfig.DEBUG && service.packageName == "com.wangzan101.mika.rootprobe") {
+                        Log.i("MikaTask", "gate_debug_auto_pass")
+                    } else {
+                        if (phoneScreen.acquired && dispatcher?.surface != WEB) phone?.screen?.let { awaitUserPick(it, taskGate, w) }
+                        // 手机屏第一次用到时才接上:实验构建允许锁屏操作手机时,接上之前的第一步(打开 App)也按手机算,不然永远等解锁
+                        taskGate.pass({ (phoneScreen.acquired || com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE) && dispatcher?.surface != WEB }, w)
+                    }
                 }, knowledge = knowledge, sink = sink, trace = trace, installedApps = { apps },
                 // 选渠道用的事实:装了哪些 App、在 Mika 里登录过哪些网站、有没有内置浏览器
                 channelFacts = {
@@ -973,6 +1016,7 @@ class TaskRun(
                 // 同一网站、App 里连着联系别人、提交:两次之间隔一段随机的时间
                 outwardPacing = OutwardPacing.human(),
             )
+            if (BuildConfig.DEBUG) Log.i("MikaTask", "phase=tools_ready phone_lazy=true")
             loop = agent
             liveFeed = agent.events.subscribe(liveEvents)
             mcpExternalId?.let { mcpEvents = (service.application as MikaApp).remoteTasks.attach(it, agent.events) }

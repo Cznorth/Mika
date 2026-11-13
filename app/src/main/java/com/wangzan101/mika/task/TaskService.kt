@@ -11,6 +11,7 @@ import android.app.RemoteInput
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.util.Base64
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Handler
@@ -19,6 +20,7 @@ import android.os.Looper
 import android.os.RemoteException
 import android.os.SystemClock
 import android.util.Log
+import com.wangzan101.mika.BuildConfig
 import android.widget.Toast
 import com.wangzan101.mika.core.action.ConfirmChoice
 import com.wangzan101.mika.R
@@ -250,7 +252,16 @@ class TaskService : Service() {
     private fun waitKeyOf(intent: Intent) = intent.getIntExtra(EXTRA_WAIT_KEY, -1).takeIf { it >= 0 }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Debug/rootprobe callers cannot safely pass spaces through shell quoting.
+        // Accept the same transport used by RootProbeReceiver and normalize it once.
+        if (BuildConfig.DEBUG && intent?.hasExtra(EXTRA_GOAL_B64) == true && !intent.hasExtra(EXTRA_GOAL)) {
+            intent.getStringExtra(EXTRA_GOAL_B64)?.let { encoded ->
+                runCatching { String(Base64.decode(encoded, Base64.DEFAULT), Charsets.UTF_8) }
+                    .getOrNull()?.takeIf { it.isNotBlank() }?.let { intent.putExtra(EXTRA_GOAL, it) }
+            }
+        }
         lastStartId = startId
+        if (BuildConfig.DEBUG) Log.i(TAG, "onStartCommand action=${intent?.action} goalPresent=${intent?.hasExtra(EXTRA_GOAL) == true} startId=$startId")
         // 系统重交旧启动请求、通知按钮或外部入口都可能在完全退出后到这里:不处理动作,也不让服务驻留
         if (FeatureFlags.get(this).quitRequested()) {
             stopSelf(startId)
@@ -330,6 +341,7 @@ class TaskService : Service() {
         provenance: RunProvenance = RunProvenance(), triggerKey: String? = null,
         triggerActionGoal: String? = null, triggerThreadId: String? = null, mcpExternalId: String? = null, messageId: String? = null,
         channelPeer: ChannelPeer? = null, channelMessageId: String? = null, triggerCondition: String? = null) {
+        if (BuildConfig.DEBUG) Log.i(TAG, "begin goalLength=${newGoal.length} conversation=${requestedConversation != null} origin=${provenance.origin}")
         if (teachingBlocks()) {
             if (provenance.origin == RunOrigin.Ui) {
                 android.widget.Toast.makeText(this, tr(R.string.teach_blocked_task), android.widget.Toast.LENGTH_LONG).show()
@@ -1022,6 +1034,7 @@ class TaskService : Service() {
         const val ACTION_CLOSE_KEPT_PAGE = "com.wangzan101.mika.task.CLOSE_KEPT_PAGE"
         const val ACTION_DECLINE = "com.wangzan101.mika.task.DECLINE"
         private const val EXTRA_GOAL = "goal"
+        private const val EXTRA_GOAL_B64 = "goal_b64"
         private const val EXTRA_MESSAGE_ID = "message_id"
         private const val EXTRA_SOURCE = "source"
         private const val EXTRA_CONVERSATION = "conversation"

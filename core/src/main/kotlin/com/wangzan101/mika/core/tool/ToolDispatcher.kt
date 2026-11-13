@@ -228,6 +228,7 @@ class ToolDispatcher internal constructor(
     private var executed = 0
 
     private suspend fun dispatch(call: Part.ToolCall, step: Int?, sub: SubActions?): ToolExecution {
+        println("MikaTool dispatch name=${call.name}")
         surfaces.skip()
         val tool = registry[call.name] ?: return unknown(call.name, parseArgs(call.argsJson))
         // 收着的组里的工具(入口,或模型凭记忆调了没给它看的)照常执行;它那一组就此展开,结果里说一句,下一次调用起看得到整组
@@ -244,6 +245,7 @@ class ToolDispatcher internal constructor(
     }
 
     private suspend fun dispatchTool(tool: AgentTool, call: Part.ToolCall, step: Int?, sub: SubActions?): ToolExecution {
+        println("MikaTool handler name=${tool.name}")
         val args = try {
             val el = if (call.argsJson.isBlank()) JsonObject(emptyMap()) else Json.parseToJsonElement(call.argsJson)
             Args(tool.def(ctx), el as? JsonObject ?: throw ArgError("arguments", "must be a JSON object"))
@@ -287,6 +289,7 @@ class ToolDispatcher internal constructor(
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                println("MikaTool handler_exception name=${tool.name} type=${e::class.simpleName}")
                 fail("operation_failed", Feedback.format("operation_failed", "tool" to tool.name, "error" to (e.message ?: e::class.simpleName)))
             } finally {
                 ctx.reportsEffect = false

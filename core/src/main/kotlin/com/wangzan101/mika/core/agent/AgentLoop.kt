@@ -621,6 +621,7 @@ class AgentLoop(
             answered = null
 
             val first = calls.first()
+            println("MikaLoop tool_parsed name=${first.name} matched=${tools.verb(first.name) != null}")
             trace?.toolStarted(step, first.name, first.id, now())
             val skipped = calls.drop(1).map {
                 Part.ToolResult(it.id, buildJsonObject {
@@ -661,7 +662,7 @@ class AgentLoop(
             gateState = running
             var advice: String? = null
             var waitsForUser = false
-            val action = executor.run(first, Origin.Model(step), object : FollowUp {
+            val action = try { executor.run(first, Origin.Model(step), object : FollowUp {
                 override suspend fun resolve(exec: ToolExecution): ToolExecution? {
                     var e = exec
                     (e.outcome as? Outcome.Confirm)?.let { e = user.confirm(it, step, running) }
@@ -702,7 +703,14 @@ class AgentLoop(
                 // 不在屏上、要问的一步(会改动东西的 root 命令):用和付款同一张确认卡片当场问,申报就是这一步本身
                 override suspend fun approve(request: ConfirmationRequest): ToolExecution =
                     user.confirm(Outcome.Confirm(request, request.app), step, running)
-            })
+            }) } catch (e: CancellationException) {
+                println("MikaLoop tool_cancelled name=${first.name}")
+                throw e
+            } catch (e: Exception) {
+                println("MikaLoop tool_exception name=${first.name} type=${e::class.simpleName}")
+                throw e
+            }
+            println("MikaLoop tool_complete name=${first.name}")
             val ran = when (action) {
                 is ActionOutcome.Cancelled -> return TaskState.Cancelled
                 is ActionOutcome.Refused -> {
