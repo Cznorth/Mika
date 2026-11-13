@@ -140,6 +140,7 @@ object HelperProcess {
             // 包名和 uid 可能被重装的别的 App 占用:签名对不上就不交 Binder,撤掉改动退出
             if (!signedAsPinned()) {
                 Log.e(TAG, "$packageName is missing or not signed with the pinned certificate; exiting")
+                runCatching { service.stopGuard() }
                 runCatching { service.releaseAll() }
                 exitProcess(0)
             }
@@ -212,6 +213,7 @@ object HelperProcess {
         private fun onAppDied(token: IBinder) {
             if (appToken !== token) return
             appToken = null
+            runCatching { service.stopGuard() }
             runCatching { service.releaseAll() }.onFailure { Log.w(TAG, "cleanup failed", it) }
             if (!installed()) {
                 Log.i(TAG, "$packageName is gone; exiting")

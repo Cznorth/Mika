@@ -1823,8 +1823,18 @@ class ShellService(
         override fun write(path: String, text: String): Boolean = runCatching { File(path).writeText(text); true }.getOrDefault(false)
     }
 
+    /**
+     * 撤掉后台守护(放行规则、加过的白名单),等它收完尾再返回。Mika 进程没了、助手要退出时调。
+     * 任务结束解绑走的 [releaseAll] 不撤:守护归 [keepTaskAlive] 管,电脑连接开着时 Mika 还要它
+     * (以前在这里撤掉,KeepAlive 却以为还开着,要等半小时续期才补上,期间熄屏就被 Hans 断网)。
+     */
+    fun stopGuard() {
+        val run = synchronized(guardLock) { guardRun.also { guardRun = null } } ?: return
+        run.finish()
+        runCatching { run.join(GUARD_STOP_WAIT_MS) }
+    }
+
     override fun releaseAll() {
-        synchronized(guardLock) { guardRun?.finish(); guardRun = null }
         restoreClip()
         synchronized(muted) { muted.packages() }.forEach { key ->
             AppAudioKey.parse(key)?.let { (pkg, user) -> audioMuted(pkg, user, false) } ?: synchronized(muted) { muted.remove(key) }
@@ -1838,6 +1848,7 @@ class ShellService(
     }
 
     override fun destroy() {
+        stopGuard()
         releaseAll()
         exitProcess(0)
     }
@@ -1945,6 +1956,7 @@ class ShellService(
         private const val GUARD_GONE_ROUNDS = 10
         /** 兜底上限:漏了叫停也不会一直改着系统。 */
         private const val GUARD_MAX_MS = 6 * 60 * 60 * 1000L
+        private const val GUARD_STOP_WAIT_MS = 3_000L
         private const val COMMAND_OUTPUT_MAX = 64 * 1024
         private const val READER_JOIN_MS = 1_000L
         private val MODE_RE = Regex("[a-z_]+")
