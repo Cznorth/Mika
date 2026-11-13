@@ -35,6 +35,7 @@ class MikaImeService : InputMethodService() {
 
     override fun onStartInput(attribute: EditorInfo?, restarting: Boolean) {
         super.onStartInput(attribute, restarting)
+        Log.i(TAG, "onStartInput pkg=${attribute?.packageName} restarting=$restarting active=${active.get()}")
         if (!active.get()) {
             Log.i(TAG, "selected outside a commit; switching back")
             runCatching { switchToPreviousInputMethod() }
@@ -71,18 +72,23 @@ class MikaImeService : InputMethodService() {
         private fun quote(s: String) = "'" + s.replace("'", "'\\''") + "'"
 
         /**
-         * 经 root 助手切到 Mika 输入法,把 [text] 提交给 [pkg] 当前聚焦的编辑框,再切回。
+         * 经 root 助手把焦点挪到 Mika 的屏 [displayId]、切到 Mika 输入法,把 [text] 提交给 [pkg] 当前聚焦的编辑框,再切回。
          * 返回 [AsciiTextKeys] 的取值:没提交出去为 NOT_SENT,已提交为 DISPATCHED。
          */
-        fun type(shell: IMikaShell, appId: String, pkg: String, text: String): Int = synchronized(lock) {
+        fun type(shell: IMikaShell, appId: String, displayId: Int, pkg: String, text: String): Int = synchronized(lock) {
             val id = "$appId/${MikaImeService::class.java.name}"
             val prev = shell.runCommand("settings get secure default_input_method")
                 .getString("output").orEmpty().trim()
-            if (prev.isEmpty() || prev == "null") return AsciiTextKeys.NOT_SENT
+            if (prev.isEmpty() || prev == "null") { Log.w(TAG, "no current ime: '$prev'"); return AsciiTextKeys.NOT_SENT }
             val wasEnabled = shell.runCommand("settings get secure enabled_input_methods")
                 .getString("output").orEmpty().split(':').any { it.trim() == id }
+            Log.i(TAG, "switching $prev -> $id for $pkg (enabled=$wasEnabled)")
             active.set(true)
+            // Mika 的屏平时不拿最上层焦点,输入法只连得上最上层焦点屏里的编辑框:提交期间临时挪过来
+            var focusedBefore = -1
             try {
+                focusedBefore = shell.focusDisplay(displayId)
+                if (focusedBefore < 0) return AsciiTextKeys.NOT_SENT
                 val set = shell.runCommand("ime enable ${quote(id)} >/dev/null 2>&1; ime set ${quote(id)}")
                 if (set.getInt("exitCode") != 0) {
                     Log.w(TAG, "ime set failed: ${set.getString("output")}")
@@ -91,14 +97,19 @@ class MikaImeService : InputMethodService() {
                 val deadline = SystemClock.uptimeMillis() + BIND_WAIT_MS
                 while (current?.ready(pkg) != true && SystemClock.uptimeMillis() < deadline) Thread.sleep(50)
                 val ime = current?.takeIf { it.ready(pkg) } ?: run {
-                    Log.w(TAG, "no input connection to $pkg")
+                    Log.w(TAG, "no input connection to $pkg: ime=${current != null} ic=${current?.currentInputConnection != null} editor=${current?.currentInputEditorInfo?.packageName}")
                     return AsciiTextKeys.NOT_SENT
                 }
-                return if (ime.commitOnMain(pkg, text)) AsciiTextKeys.DISPATCHED else AsciiTextKeys.NOT_SENT
+                val ok = ime.commitOnMain(pkg, text)
+                Log.i(TAG, "commit to $pkg ok=$ok")
+                return if (ok) AsciiTextKeys.DISPATCHED else AsciiTextKeys.NOT_SENT
             } finally {
                 active.set(false)
                 val back = "ime set ${quote(prev)}" + if (wasEnabled) "" else "; ime disable ${quote(id)} >/dev/null 2>&1"
                 runCatching { shell.runCommand(back) }.onFailure { Log.w(TAG, "restore ime failed", it) }
+                if (focusedBefore >= 0 && focusedBefore != displayId) {
+                    runCatching { shell.focusDisplay(focusedBefore) }.onFailure { Log.w(TAG, "restore focus failed", it) }
+                }
             }
         }
     }

@@ -1767,6 +1767,22 @@ class ShellService(
     private val guardLock = Any()
     private var guardRun: GuardRun? = null
 
+    override fun focusDisplay(displayId: Int): Int {
+        if (displayId != Display.DEFAULT_DISPLAY && !ownDisplay(displayId)) return -1
+        return try {
+            val before = runCatching {
+                val info = taskManager.javaClass.getMethod("getFocusedRootTaskInfo").invoke(taskManager)
+                info?.javaClass?.getField("displayId")?.getInt(info)
+            }.getOrNull() ?: Display.DEFAULT_DISPLAY
+            taskManager.javaClass.getMethod("focusTopTask", Int::class.java).invoke(taskManager, displayId)
+            Log.i(TAG, "focusDisplay $before -> $displayId")
+            before
+        } catch (t: Throwable) {
+            Log.w(TAG, "focusDisplay $displayId failed", t)
+            -1
+        }
+    }
+
     override fun keepTaskAlive(packageName: String, on: Boolean): Int {
         if (!on) {
             synchronized(guardLock) { guardRun?.finish(); guardRun = null }

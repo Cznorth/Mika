@@ -36,8 +36,11 @@ private class AndroidDisplayDevice(private val shell: IMikaShell, private val di
         // 锁屏时系统不让任何 App 读剪贴板(粘不进去):纯 ASCII 改按键逐个打,其余临时切到 Mika 输入法直接提交
         if (shell.setClipText(text) != ShellService.CLIP_SET) {
             if (AsciiTextKeys.supports(text)) return shell.injectAsciiText(target.displayId, target.taskId, target.packageName, text)
-            if (shell.topTaskId(target.displayId) != target.taskId) return AsciiTextKeys.NOT_SENT
-            return MikaImeService.type(shell, BuildConfig.APPLICATION_ID, target.packageName, text)
+            if (shell.topTaskId(target.displayId) != target.taskId) {
+                android.util.Log.w("MikaIme", "paste: task ${target.taskId} no longer on top")
+                return AsciiTextKeys.NOT_SENT
+            }
+            return MikaImeService.type(shell, BuildConfig.APPLICATION_ID, target.displayId, target.packageName, text)
         }
         try {
             if (shell.topTaskId(target.displayId) != target.taskId) return AsciiTextKeys.NOT_SENT

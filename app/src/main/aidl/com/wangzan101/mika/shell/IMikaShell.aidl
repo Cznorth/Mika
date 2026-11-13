@@ -131,6 +131,10 @@ interface IMikaShell {
     // Mika 的进程全没了助手也会自己撤。0=已照办 1=助手不是 root,做不了 2=参数不对或出错
     int keepTaskAlive(String packageName, boolean on) = 55;
 
+    // 把系统的最上层焦点挪到 Mika 自己的这块屏(锁屏时临时切输入法提交文字要用;Mika 的屏平时不抢焦点)。
+    // 返回挪之前拿着最上层焦点的屏(之后用它挪回去);不是 Mika 的屏或出错返回 -1。displayId 为 0 时只挪回主屏
+    int focusDisplay(int displayId) = 56;
+
     // 沿用早先定下的销毁事务号;AIDL 要求要么全部方法编号要么都不编号
     void destroy() = 16777114;
 }
