@@ -228,7 +228,7 @@ internal class ModelCaller(
                 val wait = policy.delayFor(e, retries, taskRetryWaitMs) ?: throw e
                 retries += 1
                 taskRetryWaitMs += wait
-                emit(RunEvent.State(now(), "model_retry", "${roleOf(using)} ${RetryPolicy.label(e)} #$retries ${wait}ms"))
+                emit(RunEvent.State(now(), "model_retry", "${roleOf(using)} ${RetryPolicy.label(e)}${RetryPolicy.causeOf(e)} #$retries ${wait}ms"))
                 // 等待中取消任务就此结束
                 delay(wait)
             }

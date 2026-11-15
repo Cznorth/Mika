@@ -61,5 +61,15 @@ class RetryPolicy(
             is ModelError.Proxy -> if (e.failure == ProxyFailure.Unreachable) "proxy_unreachable" else "proxy_auth"
             else -> e::class.simpleName.orEmpty()
         }
+
+        /**
+         * 底层异常的类名(只取类名,不带消息里的地址),接在 [label] 后面进运行记录,如 `network(UnknownHostException)`;
+         * 解析不了域名、连不上、超时、证书不对这几种「网络连接失败」看记录就能分开。没有底层异常时为空串。
+         */
+        fun causeOf(e: Throwable): String {
+            var c = e.cause ?: return ""
+            while (c is ModelError) c = c.cause ?: break
+            return c::class.simpleName?.let { "($it)" }.orEmpty()
+        }
     }
 }

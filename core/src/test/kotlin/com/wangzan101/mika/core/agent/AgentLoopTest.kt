@@ -456,6 +456,20 @@ class AgentLoopTest {
         assertEquals(listOf("main server_502 #1 1000ms", "main rate_limited #2 1500ms"), retries)
     }
 
+    // 网络失败的记录带上底层异常的类名(区分解析不了域名和连不上),不带消息
+    @Test fun networkRetryRecordsCause() = runTest {
+        val events = mutableListOf<RunEvent>()
+        val sink = object : RunSink {
+            override fun event(e: RunEvent) { events += e }
+            override fun media(mediaId: Int, png: ByteArray) = Unit
+        }
+        val cause = java.net.UnknownHostException("opencode.ai")
+        loop(FakeModel(ModelError.Network(cause), finish()), sink = sink).run("t")
+        val retries = events.filterIsInstance<RunEvent.State>().filter { it.name == "model_retry" }.map { it.detail }
+        assertEquals(1, retries.size)
+        assertTrue(retries[0], retries[0].startsWith("main network(UnknownHostException) #1 "))
+    }
+
     // 退避等待中取消任务:不再发请求,任务按取消结束
     @Test fun cancelDuringBackoff() = runTest {
         val m = FakeModel(ModelError.Server(503), finish())
