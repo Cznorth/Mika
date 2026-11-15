@@ -213,7 +213,8 @@ object HelperProcess {
         private fun onAppDied(token: IBinder) {
             if (appToken !== token) return
             appToken = null
-            runCatching { service.stopGuard() }
+            // 被杀的 Mika 还要被拉回来:白名单留着,它回来后才起得了前台服务、Doze 里才联得上网
+            runCatching { service.stopGuard(appDied = true) }
             runCatching { service.releaseAll() }.onFailure { Log.w(TAG, "cleanup failed", it) }
             if (!installed()) {
                 Log.i(TAG, "$packageName is gone; exiting")

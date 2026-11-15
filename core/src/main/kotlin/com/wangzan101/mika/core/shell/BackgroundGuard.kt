@@ -5,14 +5,14 @@ package com.wangzan101.mika.core.shell
  * (iptables 的 oplus_fw_OUTPUT / oplus_fw_INPUT 里 skfilter_*_hans),再把进程放进 cgroup v1 的冻结组;
  * 前台服务、电池白名单都拦不住它。Mika 自己被冻住时什么也做不了,所以由 root 身份的内置助手在任务期间维持:
  *
- * - 电池优化白名单(原先不在才加,结束时撤)、待机分组设为 active;
+ * - 电池优化白名单(原先不在才加,结束时撤;Mika 进程被杀时留着,等它回来接着用,见 [stop])、待机分组设为 active;
  * - 定时看一遍 Mika 的进程:冻住的解冻(v1 挪进 thaw 组或根组,v2 把 cgroup.freeze 写回 0);
  * - 在 Hans 那两条链的最前面放行 Mika 的连接:出去的包按 uid 认,并给连接打上 [CONNMARK_BIT];
  *   回来的包认这个连接标记(INPUT 上看不出 uid)。Hans 不在时这两条链不存在,加不上就算了。结束时删掉。
  *
  * 只改 Mika 自己的进程和 uid,不动 Hans 的配置文件,也不动别的 App。纯逻辑,命令和文件读写由 [io] 给(测试里换掉)。
  */
-class BackgroundGuard(private val uid: Int, private val packageName: String, private val io: Io) {
+class BackgroundGuard(private val uid: Int, val packageName: String, private val io: Io) {
     interface Io {
         /** 跑一条命令,返回 (退出码, 输出)。 */
         fun run(vararg cmd: String): Pair<Int, String>
@@ -25,14 +25,16 @@ class BackgroundGuard(private val uid: Int, private val packageName: String, pri
     private var addedWhitelist = false
     private var started = false
 
-    /** 开始维持;不合规矩的参数什么都不做,返回 false。 */
-    fun start(): Boolean {
+    /**
+     * 开始维持;不合规矩的参数什么都不做,返回 false。
+     * [ownsWhitelist]:白名单里那一条是上一轮守护加的、停的时候留下了(见 [stop]),这一轮接着认领,结束时照样撤。
+     */
+    fun start(ownsWhitelist: Boolean = false): Boolean {
         if (uid < FIRST_APP_UID || !PACKAGE.matches(packageName)) return false
         started = true
         val listed = io.run("cmd", "deviceidle", "whitelist").second
-        if (!whitelisted(listed, packageName)) {
-            addedWhitelist = io.run("cmd", "deviceidle", "whitelist", "+$packageName").first == 0
-        }
+        addedWhitelist = if (whitelisted(listed, packageName)) ownsWhitelist
+            else io.run("cmd", "deviceidle", "whitelist", "+$packageName").first == 0
         io.run("am", "set-standby-bucket", packageName, "active")
         ensureRules()
         tick()
@@ -77,16 +79,22 @@ class BackgroundGuard(private val uid: Int, private val packageName: String, pri
         }
     }
 
-    /** 撤掉这次加的一切;重复调用无害。 */
-    fun stop() {
-        if (!started) return
+    /**
+     * 撤掉这次加的一切;重复调用无害。
+     * [keepWhitelist]:Mika 是被系统杀掉的、还会回来时为 true。白名单不撤:被拉起来的 Mika 要靠它在后台起前台服务、
+     * 在 Doze 里联网,撤了反而更快被再杀。返回 true 表示留下了一条自己加的白名单,下一轮 [start] 要认领,或用 [removeWhitelist] 撤。
+     */
+    fun stop(keepWhitelist: Boolean = false): Boolean {
+        if (!started) return false
         started = false
         for (ipt in IPTABLES) {
             outRules().forEach { deleteAll(ipt, OUT_CHAIN, it) }
             deleteAll(ipt, IN_CHAIN, inRule())
         }
-        if (addedWhitelist) io.run("cmd", "deviceidle", "whitelist", "-$packageName")
+        val kept = addedWhitelist && keepWhitelist
+        if (addedWhitelist && !keepWhitelist) removeWhitelist(io, packageName)
         addedWhitelist = false
+        return kept
     }
 
     data class Tick(val thawed: Int, val alive: Boolean)
@@ -114,6 +122,11 @@ class BackgroundGuard(private val uid: Int, private val packageName: String, pri
     companion object {
         /** 连接标记里 Mika 用的一位:避开 netd 的低 20 位和 box 一类代理常用的 0x1000000、0x2000000。 */
         const val CONNMARK_BIT = "0x10000000"
+
+        /** 撤掉 [stop] 留下的那条白名单(不再需要守护、助手退出时)。 */
+        fun removeWhitelist(io: Io, packageName: String) {
+            if (PACKAGE.matches(packageName)) io.run("cmd", "deviceidle", "whitelist", "-$packageName")
+        }
         const val OUT_CHAIN = "oplus_fw_OUTPUT"
         const val IN_CHAIN = "oplus_fw_INPUT"
         const val CGROUP2 = "/sys/fs/cgroup"

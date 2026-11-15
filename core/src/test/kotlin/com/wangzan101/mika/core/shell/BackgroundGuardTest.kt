@@ -68,6 +68,31 @@ class BackgroundGuardTest {
     }
 
     @Test
+    fun `keeps its whitelist entry when Mika was killed and hands it to the next run`() {
+        val io = FakeIo(whitelist = "user,other.app,10111\n")
+        val first = BackgroundGuard(10583, "com.example.mika", io)
+        first.start()
+        assertTrue(first.stop(keepWhitelist = true))
+        assertTrue(io.commands.none { it == listOf("cmd", "deviceidle", "whitelist", "-com.example.mika") })
+
+        // 被拉起来以后:条目还在,下一轮认领,正常结束时照样撤
+        io.whitelist = "user,com.example.mika,10583\n"
+        val next = BackgroundGuard(10583, "com.example.mika", io)
+        next.start(ownsWhitelist = true)
+        assertFalse(next.stop())
+        assertTrue(listOf("cmd", "deviceidle", "whitelist", "-com.example.mika") in io.commands)
+    }
+
+    @Test
+    fun `never keeps or removes a whitelist entry the user added`() {
+        val io = FakeIo(whitelist = "user,com.example.mika,10583\n")
+        val guard = BackgroundGuard(10583, "com.example.mika", io)
+        guard.start()
+        assertFalse(guard.stop(keepWhitelist = true))
+        assertTrue(io.commands.none { it[0] == "cmd" && it.size == 4 })
+    }
+
+    @Test
     fun `only removes the battery whitelist entry it added`() {
         val listed = FakeIo(whitelist = "user,com.example.mika,10583\n")
         BackgroundGuard(10583, "com.example.mika", listed).apply { start(); stop() }

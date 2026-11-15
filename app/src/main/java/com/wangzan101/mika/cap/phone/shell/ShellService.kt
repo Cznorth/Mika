@@ -1766,10 +1766,16 @@ class ShellService(
 
     private val guardLock = Any()
     private var guardRun: GuardRun? = null
+    /** 上一轮守护在 Mika 被杀时留下的、自己加的那条电池白名单(包名);下一轮认领,不再需要时撤。 */
+    private var keptWhitelist: String? = null
 
     override fun keepTaskAlive(packageName: String, on: Boolean): Int {
         if (!on) {
-            synchronized(guardLock) { guardRun?.finish(); guardRun = null }
+            val (run, kept) = synchronized(guardLock) {
+                (guardRun to keptWhitelist).also { guardRun = null; keptWhitelist = null }
+            }
+            run?.finish()
+            if (kept != null) dropKeptWhitelist(kept)
             return KEEP_ALIVE_DONE
         }
         if (Process.myUid() != 0) return KEEP_ALIVE_NOT_ROOT
@@ -1778,8 +1784,10 @@ class ShellService(
         synchronized(guardLock) {
             if (guardRun?.isAlive == true) return KEEP_ALIVE_DONE
             val guard = com.wangzan101.mika.core.shell.BackgroundGuard(allowedUid, packageName, GuardIo())
-            val ok = runCatching { guard.start() }.onFailure { Log.w(TAG, "guard start failed", it) }.getOrDefault(false)
+            val owns = keptWhitelist == packageName
+            val ok = runCatching { guard.start(ownsWhitelist = owns) }.onFailure { Log.w(TAG, "guard start failed", it) }.getOrDefault(false)
             if (!ok) { runCatching { guard.stop() }; return KEEP_ALIVE_ERROR }
+            keptWhitelist = null
             guardRun = GuardRun(guard).also { it.start() }
         }
         Log.i(TAG, "background guard on for $allowedUid")
@@ -1789,9 +1797,11 @@ class ShellService(
     /** 每秒解冻一遍、每几秒补一遍放行规则;叫停、Mika 的进程全没了一阵、或到了上限就撤掉。 */
     private inner class GuardRun(private val guard: com.wangzan101.mika.core.shell.BackgroundGuard) : Thread("MikaGuard") {
         @Volatile private var stopped = false
+        /** Mika 是被杀的(还会回来):停的时候留着白名单。 */
+        @Volatile private var appDied = false
         init { isDaemon = true }
 
-        fun finish() { stopped = true; interrupt() }
+        fun finish(appDied: Boolean = false) { this.appDied = appDied; stopped = true; interrupt() }
 
         override fun run() {
             val until = SystemClock.uptimeMillis() + GUARD_MAX_MS
@@ -1802,15 +1812,19 @@ class ShellService(
                     val tick = runCatching { guard.tick() }.getOrNull()
                     if (tick != null && tick.thawed > 0) Log.i(TAG, "guard thawed ${tick.thawed}")
                     gone = if (tick?.alive == false) gone + 1 else 0
-                    if (gone >= GUARD_GONE_ROUNDS) break
+                    if (gone >= GUARD_GONE_ROUNDS) { appDied = true; break }
                     if (++round % GUARD_RULE_EVERY == 0) runCatching { guard.ensureRules() }
                     sleep(GUARD_TICK_MS)
                 }
             } catch (_: InterruptedException) {
             } finally {
-                runCatching { guard.stop() }.onFailure { Log.w(TAG, "guard stop failed", it) }
-                synchronized(guardLock) { if (guardRun === this) guardRun = null }
-                Log.i(TAG, "background guard off")
+                val kept = runCatching { guard.stop(keepWhitelist = appDied) }
+                    .onFailure { Log.w(TAG, "guard stop failed", it) }.getOrDefault(false)
+                synchronized(guardLock) {
+                    if (guardRun === this) guardRun = null
+                    if (kept) keptWhitelist = guard.packageName
+                }
+                Log.i(TAG, "background guard off" + if (kept) " (battery whitelist kept for Mika's return)" else "")
             }
         }
     }
@@ -1825,13 +1839,23 @@ class ShellService(
 
     /**
      * 撤掉后台守护(放行规则、加过的白名单),等它收完尾再返回。Mika 进程没了、助手要退出时调。
+     * [appDied]:Mika 是被系统杀掉的、助手还会等它回来;这时自己加的白名单留着(见 BackgroundGuard.stop)。
      * 任务结束解绑走的 [releaseAll] 不撤:守护归 [keepTaskAlive] 管,电脑连接开着时 Mika 还要它
      * (以前在这里撤掉,KeepAlive 却以为还开着,要等半小时续期才补上,期间熄屏就被 Hans 断网)。
      */
-    fun stopGuard() {
-        val run = synchronized(guardLock) { guardRun.also { guardRun = null } } ?: return
-        run.finish()
-        runCatching { run.join(GUARD_STOP_WAIT_MS) }
+    fun stopGuard(appDied: Boolean = false) {
+        val run = synchronized(guardLock) { guardRun.also { guardRun = null } }
+        if (run != null) {
+            run.finish(appDied)
+            runCatching { run.join(GUARD_STOP_WAIT_MS) }
+        }
+        if (!appDied) synchronized(guardLock) { keptWhitelist.also { keptWhitelist = null } }?.let(::dropKeptWhitelist)
+    }
+
+    private fun dropKeptWhitelist(pkg: String) {
+        runCatching { com.wangzan101.mika.core.shell.BackgroundGuard.removeWhitelist(GuardIo(), pkg) }
+            .onFailure { Log.w(TAG, "removing kept whitelist failed", it) }
+        Log.i(TAG, "kept battery whitelist removed")
     }
 
     override fun releaseAll() {
