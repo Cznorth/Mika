@@ -28,6 +28,9 @@ import com.wangzan101.mika.settings.McpUsbSettings
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
 import java.io.File
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -64,6 +67,14 @@ class McpRuntime(
     private val relayNetwork = RelayNetwork(context, relay::networkChanged)
     val relayState get() = relay.state
     private val active get() = listen() != McpModes.Listen.Off || relaySettings.config.value.enabled
+    private val activeNow = MutableStateFlow(false)
+
+    /**
+     * 电脑连接(本地监听、USB、远程网关任一种)开着没有:开关、服务状态、网关设置任一变了就重新看一遍。
+     * 给内置助手的「被杀后要不要拉起来」用:开着电脑连接时,没有任务也要拉,不然电脑派不进活。
+     */
+    val activeChanges: Flow<Boolean> =
+        combine(activeNow, state, relaySettings.config) { _, _, _ -> active }.distinctUntilChanged()
 
     /** 最近连过的客户端和最后一次请求;没在监听时为空。 */
     val activity: RemoteActivity get() = if (active) endpoints.activity.value else RemoteActivity()
@@ -117,6 +128,7 @@ class McpRuntime(
 
     /** 开关变了:还有一种开着就让服务按新的开关重新监听,都关了就停服务。 */
     private fun apply() {
+        activeNow.value = active
         if (active) ensureRunning() else {
             context.stopService(Intent(context, McpService::class.java))
             _state.value = McpServerState.Off

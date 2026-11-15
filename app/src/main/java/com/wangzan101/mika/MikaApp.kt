@@ -408,7 +408,7 @@ class MikaApp : Application(), WebOwner, SandboxOwner, TaskEnvironment.Owner, Ph
         // 告诉内置助手:Mika 被杀后要不要把它拉起来(胶囊一直显示或有任务在跑时才要;退出期间都不要)
         com.wangzan101.mika.cap.phone.setup.RestoreWishSync(
             phone.hub, flags.capsuleModeChanges(), taskState.busy, phone.recoverySettings.consent,
-            phone.recovery.accessibility, flags.quitChanges(),
+            phone.recovery.accessibility, flags.quitChanges(), mcp.activeChanges,
         ).start()
         // 上次异常退出时留下的改动(App 被静音)在这里恢复
         scope.launch { taskRecovery.recover() }

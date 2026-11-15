@@ -15,6 +15,13 @@ class HelperRestoreTest {
     fun wishFollowsCapsuleModeTasksAndAccessibility() {
         assertTrue(RestoreWish.of(capsuleAlways = true, taskRunning = false, accessibilityWanted = true, accessibilityOn = false).revive)
         assertTrue(RestoreWish.of(capsuleAlways = false, taskRunning = true, accessibilityWanted = true, accessibilityOn = false).revive)
+        // 电脑连接开着:没有任务、胶囊也不常驻,照样拉起来;不连带写回无障碍
+        val computer = RestoreWish.of(capsuleAlways = false, taskRunning = false, accessibilityWanted = true,
+            accessibilityOn = false, computerAccess = true)
+        assertTrue(computer.revive)
+        assertFalse(computer.accessibility)
+        assertEquals(RestoreWish.NONE, RestoreWish.of(capsuleAlways = false, taskRunning = false, accessibilityWanted = true,
+            accessibilityOn = false, userExited = true, computerAccess = true))
         // 无障碍还开着:异常死亡后也要回来并恢复授权,不能只在常驻胶囊或有任务时才修
         val accessibility = RestoreWish.of(capsuleAlways = false, taskRunning = false, accessibilityWanted = true, accessibilityOn = true)
         assertTrue(accessibility.revive)

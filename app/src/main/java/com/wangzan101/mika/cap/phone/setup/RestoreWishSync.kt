@@ -22,7 +22,7 @@ import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
 
 /**
- * 把「Mika 被杀后要不要拉起来」([RestoreWish])交给内置助手:胶囊模式、有没有任务在跑、「替我打开无障碍」、
+ * 把「Mika 被杀后要不要拉起来」([RestoreWish])交给内置助手:胶囊模式、有没有任务在跑、电脑连接开没开、「替我打开无障碍」、
  * 系统列表里有没有 Mika 的无障碍服务、用户是不是点了完全退出,任一变了、或换了助手,就经 [IMikaShell.setRestoreWish] 再交一次。
  * 助手读不到 Mika 的设置,Mika 死后只按最后交到的这一份行事。
  */
@@ -34,6 +34,8 @@ class RestoreWishSync(
     private val accessibility: Flow<A11yObservation>,
     /** 用户点了「完全退出」:哪怕胶囊是「一直显示」、哪怕还有任务在跑,也不让助手把 Mika 拉起来。 */
     private val quit: Flow<Boolean>,
+    /** 电脑连接开着:没有任务、胶囊不常驻时也要拉起来,不然电脑派不进活。 */
+    private val computerAccess: Flow<Boolean>,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val sender = RestoreWishSender<IMikaShell> { shell, wish ->
@@ -55,6 +57,8 @@ class RestoreWishSync(
         val wishes = combine(capsuleMode, taskRunning, consent, accessibilityOn, quit) { mode, busy, c, on, quit ->
             RestoreWish.of(mode == CapsuleMode.Always && !quit, busy && !quit,
                 !com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE && c.wants(RecoveryCapability.Accessibility), on, quit)
+        }.combine(combine(computerAccess, quit) { pc, quit -> pc && !quit }) { wish, pc ->
+            if (pc && !wish.revive) wish.copy(revive = true) else wish
         }.distinctUntilChanged()
         scope.launch { combine(hub.shell, wishes, ::Pair).collect { (shell, wish) -> sender.update(shell, wish) } }
     }

@@ -18,7 +18,7 @@ data class RestoreWish(val revive: Boolean, val accessibility: Boolean) {
         fun fromFlags(flags: Int) = RestoreWish(flags and REVIVE != 0, flags and ACCESSIBILITY != 0)
 
         /**
-         * 异常死亡时恢复用户还在用的能力:胶囊一直显示、任务在跑、或无障碍服务已打开。
+         * 异常死亡时恢复用户还在用的能力:胶囊一直显示、任务在跑、电脑连接开着([computerAccess])、或无障碍服务已打开。
          * 最后一种也把服务授权恢复回来,不能只在常驻胶囊或有任务时才修。
          * 用户明确退出(包括清掉最近任务)后,[userExited] 让心愿为空,直到下次手动打开 Mika。
          * 无障碍服务只在用户没在 Mika 里关掉「替我打开无障碍」([accessibilityWanted])、
@@ -30,9 +30,10 @@ data class RestoreWish(val revive: Boolean, val accessibility: Boolean) {
             accessibilityWanted: Boolean,
             accessibilityOn: Boolean,
             userExited: Boolean = false,
+            computerAccess: Boolean = false,
         ): RestoreWish {
             if (userExited) return NONE
-            val revive = capsuleAlways || taskRunning || accessibilityOn
+            val revive = capsuleAlways || taskRunning || computerAccess || accessibilityOn
             return RestoreWish(revive, revive && accessibilityWanted && accessibilityOn)
         }
     }
