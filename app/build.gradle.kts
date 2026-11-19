@@ -59,9 +59,8 @@ android {
         // 真机验收时并排安装,保留发行版和用户数据;默认构建标识不变。
         if (providers.gradleProperty("devInstall").isPresent) getByName("debug") {
             applicationIdSuffix = if (providers.gradleProperty("rootProbeInstall").isPresent) ".rootprobe" else ".dev"
-            if (providers.gradleProperty("experimentalLockedPhone").isPresent) {
-                buildConfigField("boolean", "EXPERIMENTAL_LOCKED_PHONE", "true")
-            }
+            // 真机验收包只走 root:不注册无障碍自动修复,也不自动补无障碍。
+            buildConfigField("boolean", "EXPERIMENTAL_LOCKED_PHONE", "true")
             resValue("string", "app_name", "Mika Dev")
         }
         // 看流畅度用的包:和发布版一样不可调试(调试包不做预先编译,界面慢好几倍,手感不作数),
