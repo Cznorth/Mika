@@ -65,6 +65,9 @@ class ShellService(
     private val context: Context = ShellContext.create()
     /** 自己建的屏和放掉它的办法(普通虚拟屏或 ColorOS 后台流转屏)。 */
     private val displays = HashMap<Int, () -> Unit>()
+    private val displayIdentities = HashMap<Int, String>()
+    private val closingDisplays = HashSet<Int>()
+    private val rootIsolation: Boolean get() = Process.myUid() == 0
     private var orientationWatch: DisplayOrientationWatch? = null
     private val requestedOrientations = ConcurrentHashMap<Int, Int>()
     /** 被静音的包 → 静音前的 PLAY_AUDIO 模式("default" 表示原先未设置),落在 [stateDir] 里,进程被杀后下次启动接着恢复。 */
@@ -125,26 +128,18 @@ class ShellService(
                     attached = false
                 } else Log.i(TAG, "display $id moved to independent group $group")
             }
-            check(group != null) { "display group unavailable: display=$id" }
-            // ColorOS 16 把 OWN_DISPLAY_GROUP 的屏也放进默认组(0):跟着主屏亮灭,主屏灭时出不了帧。
-            // 实验构建里先接受它(主屏亮着时能用),正式构建仍要独立组。
-            if (group <= 0) {
-                check(com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE) { "independent display group unavailable: display=$id group=$group" }
-                Log.w(TAG, "display $id landed in default group; follows main screen power")
-            }
-            if (group <= 0 && !mainScreenOn()) {
-                // 登记不上而主屏又没亮:这块屏出不了帧,改用系统建的流转屏
-                vd.release()
-                createMirageDisplay(surface, width, height, dpi)?.let { return it }
-                error("no frames: display=$id stays in default group while the main screen is off")
-            }
+            check(group != null && group > 0) { "independent display group unavailable: display=$id group=$group" }
             group
         } catch (t: Throwable) {
             if (attached) detachMirage(id)
             vd.release()
             throw t
         }
-        synchronized(displays) { displays[id] = { if (attached) detachMirage(id); vd.release() } }
+        val identity = displayIdentity(id) ?: run { vd.release(); error("display identity unavailable") }
+        synchronized(displays) {
+            displayIdentities[id] = identity
+            displays[id] = { if (attached) detachMirage(id); vd.release() }
+        }
         try {
             setFullscreenWindowingMode(id)
             ensureOrientationWatch()
@@ -278,6 +273,7 @@ class ShellService(
     }
 
     private fun pokeDisplay(displayId: Int): Boolean {
+        if (rootIsolation && !ownDisplay(displayId)) return false
         val (power, method) = userActivity ?: return false
         return try {
             method.invoke(power, displayId, SystemClock.uptimeMillis(), DisplayAwake.EVENT_TOUCH, 0)
@@ -297,12 +293,40 @@ class ShellService(
     }.onFailure { Log.w(TAG, "display group lookup failed", it) }.getOrNull()
 
     /** 只往这个服务自己建的虚拟屏上启动,调用方传错屏号(比如主屏)也不会打扰用户。 */
-    private fun ownDisplay(displayId: Int): Boolean = synchronized(displays) { displayId in displays }
+    private fun displayIdentity(displayId: Int): String? = runCatching {
+        val display = displayManager.getDisplay(displayId) ?: return null
+        Display::class.java.getMethod("getUniqueId").invoke(display) as String
+    }.getOrNull()
 
-    override fun releaseDisplay(displayId: Int) {
+    private fun ownDisplay(displayId: Int): Boolean {
+        val expected = synchronized(displays) {
+            if (displayId !in displays || displayId in closingDisplays) return false
+            displayIdentities[displayId]
+        }
+        if (!rootIsolation) return displayId > Display.DEFAULT_DISPLAY
+        return RootDisplayIsolation.live(displayId, expected, displayIdentity(displayId), displayGroup(displayId))
+    }
+
+    override fun releaseDisplay(displayId: Int): Unit = synchronized(launchLock) {
+        if (rootIsolation && synchronized(displays) { displayId in displays }) {
+            synchronized(displays) { closingDisplays += displayId }
+            // ColorOS can reparent tasks to display 0 when its stream display is detached.
+            // Keep the display quarantined if task enumeration/removal fails.
+            val closed = runCatching {
+                RootDisplayIsolation.closeBeforeRelease(
+                    tasks = { tasksOn(displayId).map { TASK_INFO.getField("taskId").getInt(it) } },
+                    remove = ::removeTask,
+                )
+            }.getOrDefault(false)
+            if (!closed) {
+                Log.e(TAG, "refusing to release display $displayId with unclosed tasks")
+                return@synchronized
+            }
+        }
         awake.stop(displayId)
-        // 锁里只摘下来,关监听(binder)和放屏在锁外做
         val (vd, watch) = synchronized(displays) {
+            displayIdentities.remove(displayId)
+            closingDisplays.remove(displayId)
             displays.remove(displayId) to (if (displays.isEmpty()) orientationWatch.also { orientationWatch = null } else null)
         }
         watch?.close()
@@ -384,7 +408,8 @@ class ShellService(
     private fun start(displayId: Int, packageName: String, userId: Int): Int = synchronized(launchLock) {
         if (!ownDisplay(displayId)) return START_ERROR
         try {
-            if (inUseOnMainScreen(packageName, userId)) return START_IN_USE_ON_MAIN
+            if (inUseOnMainScreen(packageName, userId) ||
+                (rootIsolation && tasksOn(Display.DEFAULT_DISPLAY).any { isCopy(it, packageName, userId) })) return START_IN_USE_ON_MAIN
             if (onOtherOwnDisplay(listOf(packageName), displayId, userId)) return START_IN_USE_BY_OTHER
         } catch (t: Throwable) {
             // 看不清主屏状态时宁可不启动,也不冒险打扰用户
@@ -392,7 +417,7 @@ class ShellService(
             return START_ERROR
         }
         // 上次任务留下的那个任务还在主屏后面:整个挪回来,接着那一页做,不另开一个从头来
-        if (resumeKept(displayId, packageName, userId)) return START_OK
+        if (!rootIsolation && resumeKept(displayId, packageName, userId)) return START_OK
         val intent = launchIntent(packageName, userId) ?: return START_NOT_FOUND
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         // Root 显示后端:这块屏上还没有它的任务时另开一个,不把用户在主屏后台的那份挪过来。
@@ -402,14 +427,16 @@ class ShellService(
             !runCatching { tasksOn(displayId).any { isCopy(it, packageName, userId) } }.getOrDefault(false)) {
             intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
         }
-        val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId).toBundle()
+        val options = launchOptions(displayId, intent.`package` ?: intent.component?.packageName, intent).toBundle()
         // 另一份用户里的先走桌面打开图标的那条路:有的系统对程序启动的另一份先弹「用哪一个打开」,桌面这条路不弹
         val component = intent.component
+        if (rootIsolation && userId != myUser) return START_ERROR
         if (userId != myUser && component != null && startAsLauncher(component, userId, options)) return START_OK
         val ok = try {
             val start = taskManager.javaClass.methods.first { it.name == "startActivityAsUser" && it.parameterTypes.size == 12 }
             // (caller, callingPackage, callingFeatureId, intent, resolvedType, resultTo, resultWho,
             //  requestCode, flags, profilerInfo, options, userId)
+            if (rootIsolation && !ownDisplay(displayId)) return START_ERROR
             val result = start.invoke(
                 taskManager, null, ShellContext.SHELL_PACKAGE, null, intent, null, null, null,
                 0, 0, null, options, if (userId == myUser) USER_CURRENT else userId,
@@ -417,6 +444,10 @@ class ShellService(
             if (result < 0) Log.w(TAG, "startActivityAsUser($packageName, user $userId) -> $result")
             result >= 0
         } catch (t: Throwable) {
+            if (rootIsolation) {
+                Log.e(TAG, "isolated launch failed; no shell fallback", t)
+                return START_ERROR
+            }
             Log.w(TAG, "startActivityAsUser unavailable, falling back to am start", t)
             val component = intent.component?.flattenToShortString() ?: return START_NOT_FOUND
             val user = if (userId == myUser) emptyArray() else arrayOf("--user", "$userId")
@@ -627,9 +658,10 @@ class ShellService(
             return START_ERROR
         }
         candidates.singleOrNull()?.let { (pkg, cls) -> intent.component = ComponentName(pkg, cls) }
-        val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId).toBundle()
+        val options = launchOptions(displayId, packageName ?: intent.component?.packageName, intent).toBundle()
         val ok = try {
             val start = taskManager.javaClass.methods.first { it.name == "startActivityAsUser" && it.parameterTypes.size == 12 }
+            if (rootIsolation && !ownDisplay(displayId)) return START_ERROR
             val result = start.invoke(
                 taskManager, null, ShellContext.SHELL_PACKAGE, null, intent, null, null, null,
                 0, 0, null, options, USER_CURRENT,
@@ -637,6 +669,10 @@ class ShellService(
             if (result < 0) Log.w(TAG, "startActivityAsUser(link) -> $result")
             result >= 0
         } catch (t: Throwable) {
+            if (rootIsolation) {
+                Log.e(TAG, "isolated launch failed; no shell fallback", t)
+                return START_ERROR
+            }
             Log.w(TAG, "startActivityAsUser unavailable, falling back to am start", t)
             val target = intent.component?.let { listOf("-n", it.flattenToShortString()) }
                 ?: (listOf("-a", intent.action!!) + listOfNotNull(uri?.let { "-d" }, uri) + listOfNotNull(packageName?.let { "-p" }, packageName) +
@@ -656,16 +692,18 @@ class ShellService(
         val candidates = activitiesFor(intent, ShareIntent.TYPE) ?: return START_ERROR
         if (candidates.isEmpty()) return START_UNRESOLVED
         try {
-            if (inUseOnMainScreen(packageName)) return START_IN_USE_ON_MAIN
+            if (inUseOnMainScreen(packageName) ||
+                (rootIsolation && tasksOn(Display.DEFAULT_DISPLAY).any { isCopy(it, packageName, myUser) })) return START_IN_USE_ON_MAIN
             if (onOtherOwnDisplay(listOf(packageName), displayId)) return START_IN_USE_BY_OTHER
         } catch (t: Throwable) {
             Log.e(TAG, "cannot inspect main-screen tasks", t)
             return START_ERROR
         }
         candidates.singleOrNull()?.let { (pkg, cls) -> intent.component = ComponentName(pkg, cls) }
-        val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId).toBundle()
+        val options = launchOptions(displayId, packageName, intent).toBundle()
         val ok = try {
             val start = taskManager.javaClass.methods.first { it.name == "startActivityAsUser" && it.parameterTypes.size == 12 }
+            if (rootIsolation && !ownDisplay(displayId)) return START_ERROR
             val result = start.invoke(
                 taskManager, null, ShellContext.SHELL_PACKAGE, null, intent, ShareIntent.TYPE, null, null,
                 0, 0, null, options, USER_CURRENT,
@@ -673,6 +711,10 @@ class ShellService(
             if (result < 0) Log.w(TAG, "startActivityAsUser(share) -> $result")
             result >= 0
         } catch (t: Throwable) {
+            if (rootIsolation) {
+                Log.e(TAG, "isolated launch failed; no shell fallback", t)
+                return START_ERROR
+            }
             Log.w(TAG, "startActivityAsUser unavailable, falling back to am start", t)
             exec(*ShareIntent.amArgs(displayId, packageName, text, intent.component?.flattenToShortString()).toTypedArray()) == 0
         }
@@ -703,6 +745,7 @@ class ShellService(
         val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
         val asShell = try {
             val start = taskManager.javaClass.methods.first { it.name == "startActivityAsUser" && it.parameterTypes.size == 12 }
+            if (rootIsolation && !ownDisplay(displayId)) return START_ERROR
             val result = start.invoke(
                 taskManager, null, ShellContext.SHELL_PACKAGE, null, intent, intent.type, null, null,
                 0, 0, null, options.toBundle(), USER_CURRENT,
@@ -714,7 +757,7 @@ class ShellService(
             false
         }
         if (asShell) return START_OK
-        if (asMika == null) return START_ERROR
+        if (rootIsolation || asMika == null) return START_ERROR
         // 安卓 14 起 PendingIntent 的发出方要明说允许它从后台启动页面
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             options.setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
@@ -743,6 +786,7 @@ class ShellService(
         val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId).toBundle()
         val ok = try {
             val start = taskManager.javaClass.methods.first { it.name == "startActivityAsUser" && it.parameterTypes.size == 12 }
+            if (rootIsolation && !ownDisplay(displayId)) return START_ERROR
             val result = start.invoke(
                 taskManager, null, ShellContext.SHELL_PACKAGE, null, page, null, null, null,
                 0, 0, null, options, USER_CURRENT,
@@ -750,10 +794,26 @@ class ShellService(
             if (result < 0) Log.w(TAG, "startActivityAsUser(own page) -> $result")
             result >= 0
         } catch (t: Throwable) {
+            if (rootIsolation) {
+                Log.e(TAG, "isolated launch failed; no shell fallback", t)
+                return START_ERROR
+            }
             Log.w(TAG, "startActivityAsUser unavailable, falling back to am start", t)
             exec("am", "start", "--display", "$displayId", "--activity-clear-task", "-n", component.flattenToShortString()) == 0
         }
         return if (ok) START_OK else START_ERROR
+    }
+
+    private fun launchOptions(displayId: Int, pkg: String?, intent: Intent): ActivityOptions {
+        check(ownDisplay(displayId)) { "display lease expired" }
+        val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
+        if (rootIsolation) {
+            val existing = pkg?.let { name -> tasksOn(displayId).firstOrNull { isCopy(it, name, myUser) } }
+            if (existing == null) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+            else ActivityOptions::class.java.getDeclaredMethod("setLaunchTaskId", Int::class.java)
+                .apply { isAccessible = true }.invoke(options, TASK_INFO.getField("taskId").getInt(existing))
+        }
+        return options
     }
 
     /**
@@ -1864,16 +1924,14 @@ class ShellService(
             AppAudioKey.parse(key)?.let { (pkg, user) -> audioMuted(pkg, user, false) } ?: synchronized(muted) { muted.remove(key) }
         }
         awake.stopAll()
-        val (all, watch) = synchronized(displays) {
-            displays.values.toList().also { displays.clear() } to orientationWatch.also { orientationWatch = null }
-        }
-        watch?.close()
-        all.forEach { it() }
+        val ids = synchronized(displays) { displays.keys.toList() }
+        ids.forEach(::releaseDisplay)
     }
 
     override fun destroy() {
         stopGuard()
         releaseAll()
+        if (rootIsolation && synchronized(displays) { displays.isNotEmpty() }) return
         exitProcess(0)
     }
 
