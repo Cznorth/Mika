@@ -929,10 +929,12 @@ class ShellService(
      * 真机(安卓 14)手动验证:任务在虚拟屏与主屏之间双向都能挪。Mika 启动的任务都是根任务。
      */
     override fun moveTask(taskId: Int, displayId: Int): Boolean = try {
+        if (rootIsolation && (!ownDisplay(displayId) || !ownDisplay(displayOfTask(taskId)))) return false
         taskManager.javaClass.getMethod("moveRootTaskToDisplay", Int::class.java, Int::class.java)
             .invoke(taskManager, taskId, displayId)
         true
     } catch (t: Throwable) {
+        if (rootIsolation) return false
         Log.w(TAG, "moveRootTaskToDisplay unavailable, falling back to am", t)
         exec("am", "display", "move-stack", "$taskId", "$displayId") == 0
     }
@@ -956,6 +958,17 @@ class ShellService(
      * 这段时间里被别的任务拿到它屏上的不再管;留下的任务也要等收尾时才记进 [kept],等的时候 [resumeKept] 不会拿它。
      */
     override fun finishDisplay(displayId: Int, keep: Array<String>?, close: Array<String>?): Bundle? {
+        if (rootIsolation) return synchronized(launchLock) {
+            if (!ownDisplay(displayId)) return null
+            val packages = tasksOn(displayId).flatMap(::packagesOf).distinct().toTypedArray()
+            releaseDisplay(displayId)
+            val quarantined = synchronized(displays) { displayId in displays }
+            Bundle().apply {
+                putStringArray(AppsAfterTask.KEY_KEPT, emptyArray())
+                putStringArray(AppsAfterTask.KEY_CLOSED, if (quarantined) emptyArray() else packages)
+                putString(AppsAfterTask.KEY_NOTE, if (quarantined) "display quarantined: cleanup incomplete" else "root isolation: tasks closed without moving to the main display")
+            }
+        }
         val sorting = synchronized(launchLock) {
             if (!ownDisplay(displayId)) return null
             sortAndMove(displayId, keep, close)

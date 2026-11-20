@@ -78,6 +78,7 @@ object IsolatedSessionMain {
                             intArrayOf(q.getInt("y1"), q.getInt("y2")), longArrayOf(0, 500)))
                         "shot" -> {
                             Thread.sleep(q.optLong("wait_ms", 1200).coerceIn(0, 8000))
+                            check(service.topActivity(display) != null) { "display lease expired or no virtual app" }
                             val file = File("/data/local/tmp/mika-isolated-session.png")
                             synchronized(lock) {
                                 val frame = bitmap ?: error("no frame")
