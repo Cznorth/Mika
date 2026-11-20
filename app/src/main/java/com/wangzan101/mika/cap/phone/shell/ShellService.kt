@@ -929,14 +929,16 @@ class ShellService(
      * 真机(安卓 14)手动验证:任务在虚拟屏与主屏之间双向都能挪。Mika 启动的任务都是根任务。
      */
     override fun moveTask(taskId: Int, displayId: Int): Boolean = try {
-        if (rootIsolation && (!ownDisplay(displayId) || !ownDisplay(displayOfTask(taskId)))) return false
-        taskManager.javaClass.getMethod("moveRootTaskToDisplay", Int::class.java, Int::class.java)
-            .invoke(taskManager, taskId, displayId)
-        true
+        if (rootIsolation && (!ownDisplay(displayId) || !ownDisplay(displayOfTask(taskId)))) false else {
+            taskManager.javaClass.getMethod("moveRootTaskToDisplay", Int::class.java, Int::class.java)
+                .invoke(taskManager, taskId, displayId)
+            true
+        }
     } catch (t: Throwable) {
-        if (rootIsolation) return false
-        Log.w(TAG, "moveRootTaskToDisplay unavailable, falling back to am", t)
-        exec("am", "display", "move-stack", "$taskId", "$displayId") == 0
+        if (rootIsolation) false else {
+            Log.w(TAG, "moveRootTaskToDisplay unavailable, falling back to am", t)
+            exec("am", "display", "move-stack", "$taskId", "$displayId") == 0
+        }
     }
 
     /**
