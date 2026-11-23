@@ -427,19 +427,19 @@ class ShellService(
             !runCatching { tasksOn(displayId).any { isCopy(it, packageName, userId) } }.getOrDefault(false)) {
             intent.addFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
         }
-        val options = launchOptions(displayId, intent.`package` ?: intent.component?.packageName, intent).toBundle()
         // 另一份用户里的先走桌面打开图标的那条路:有的系统对程序启动的另一份先弹「用哪一个打开」,桌面这条路不弹
         val component = intent.component
         if (rootIsolation && userId != myUser) return START_ERROR
-        if (userId != myUser && component != null && startAsLauncher(component, userId, options)) return START_OK
         val ok = try {
+            val options = launchOptions(displayId, intent.`package` ?: component?.packageName, intent).toBundle()
+            if (userId != myUser && component != null && startAsLauncher(component, userId, options)) return START_OK
             val start = taskManager.javaClass.methods.first { it.name == "startActivityAsUser" && it.parameterTypes.size == 12 }
             // (caller, callingPackage, callingFeatureId, intent, resolvedType, resultTo, resultWho,
             //  requestCode, flags, profilerInfo, options, userId)
             if (rootIsolation && !ownDisplay(displayId)) return START_ERROR
             val result = start.invoke(
                 taskManager, null, ShellContext.SHELL_PACKAGE, null, intent, null, null, null,
-                0, 0, null, options, if (userId == myUser) USER_CURRENT else userId,
+                0, 0, null, options, if (!rootIsolation && userId == myUser) USER_CURRENT else userId,
             ) as Int
             if (result < 0) Log.w(TAG, "startActivityAsUser($packageName, user $userId) -> $result")
             result >= 0

@@ -140,11 +140,7 @@ class AgentDisplay(
 
     /** Capture the image and its producer timestamp under the same lock. */
     fun latestTimedFramePng(): Pair<Long, ByteArray>? {
-        val captured = synchronized(frameLock) {
-            val bmp = fullFrame
-            if (released || !hasFrame || bmp == null || frameTimestampNanos <= 0) null
-            else frameTimestampNanos to uprightDisplayFrame(bmp, frameGeometry, paint = paint)
-        } ?: return null
+        val captured = latestTimedFrameBitmap() ?: return null
         return try {
             captured.first to ByteArrayOutputStream().also {
                 captured.second.compress(Bitmap.CompressFormat.PNG, 100, it)
@@ -154,7 +150,12 @@ class AgentDisplay(
         }
     }
 
-    /** 最新已发布帧的单调时钟纳秒时间戳。 */
+    fun latestTimedFrameBitmap(): Pair<Long, Bitmap>? = synchronized(frameLock) {
+        val bmp = fullFrame
+        if (released || !hasFrame || bmp == null || frameTimestampNanos <= 0) null
+        else frameTimestampNanos to uprightDisplayFrame(bmp, frameGeometry, paint = paint)
+    }
+
     fun lastFrameAt(): Long? = synchronized(frameLock) {
         frameTimestampNanos.takeIf { !released && it > 0 }
     }

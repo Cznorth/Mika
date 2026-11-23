@@ -37,11 +37,12 @@ internal class PhoneCapability(
     pacing: AppPacing = AppPacing.Off,
     appPace: (String) -> PlacePace = { PlacePace.NORMAL },
     idle: IdleScroll? = null,
+    systemCommands: Boolean = true,
 ) : Capability {
     val dwell = AppDwell(pacing, appPace, idle)
 
     override val id = PHONE
-    private val tools = PhoneGroup.tools
+    private val tools = if (systemCommands) PhoneGroup.tools else PhoneGroup.tools.filterNot { it.verb == Verb.PhoneCommand }
 
     override val folds = true
 

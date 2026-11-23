@@ -1,12 +1,14 @@
 package com.wangzan101.mika.core.uistate
 
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 class RootDisplayScreen(
     private val backend: RootDisplayBackend,
     private val driver: RootDisplayDriver,
-    private val launch: suspend (String) -> Boolean,
+    private val launch: suspend (String) -> ActionResult,
     private val apps: suspend () -> List<Pair<String, String>>,
     private val width: Int,
     private val height: Int,
@@ -59,14 +61,13 @@ class RootDisplayScreen(
     override suspend fun screenshotPng(): ByteArray? = mutex.withLock { checkedFrame()?.png }
 
     override suspend fun openApp(packageName: String, cold: Boolean): ActionResult = mutex.withLock {
-        if (cold || packageName.isBlank()) return@withLock ActionResult.Failed("unsupported")
+        if (cold) return@withLock ActionResult.Failed("unsupported", "Restarting an app is disabled in isolated display mode. Do not use a shell command to restart it.")
+        if (packageName.isBlank()) return@withLock ActionResult.Failed("app_not_found")
         target = null
         newerThan = driver.nowNanos()
-        if (!launch(packageName)) return@withLock ActionResult.Failed("app_launch_failed")
-        val found = driver.target()
-        if (!valid(found) || found?.packageName != packageName) return@withLock ActionResult.Failed("target_unavailable")
-        target = found
-        ActionResult.Ok()
+        val result = launch(packageName)
+        if (result is ActionResult.Failed) return@withLock result
+        awaitOpened(packageName)
     }
 
     override suspend fun openLink(action: String?, uri: String?, packageName: String?): ActionResult = mutex.withLock {
@@ -81,16 +82,43 @@ class RootDisplayScreen(
             7 -> return@withLock ActionResult.Failed("app_in_use_by_other_task")
             else -> return@withLock ActionResult.Failed("launch_failed")
         }
-        // 链接落到哪个 App 事先不一定知道:等屏上有了任务(指定了 App 的要是它)
-        var found = driver.target()
-        repeat(LINK_WAIT_POLLS) {
-            if (valid(found) && (packageName == null || found?.packageName == packageName)) return@repeat
-            kotlinx.coroutines.delay(100)
-            found = driver.target()
+        awaitOpened(packageName)
+    }
+
+    private suspend fun awaitOpened(packageName: String?): ActionResult {
+        var foundTarget = false
+        val opened = withTimeoutOrNull(OPEN_WAIT_MS) {
+            if (grid != null) delay(OPEN_SETTLE_MS)
+            var ready: RootDisplayTarget? = null
+            while (ready == null) {
+                val found = driver.target()
+                if (found != null && valid(found) && (packageName == null || found.packageName == packageName)) {
+                    foundTarget = true
+                    val usable = if (grid == null) backend.frame(found)?.timestampNanos?.let { it > newerThan } == true
+                    else grid.invoke()?.let { (at, frame) -> at > newerThan && frame.hasContent() } == true
+                    if (usable && driver.target() == found) ready = found
+                }
+                if (ready == null) delay(100)
+            }
+            ready
         }
-        if (!valid(found) || (packageName != null && found?.packageName != packageName)) return@withLock ActionResult.Failed("target_unavailable")
-        target = found
-        ActionResult.Ok()
+        if (opened == null) return if (foundTarget) ActionResult.Failed("display_capture_unavailable", "The app started, but the isolated display did not produce readable content. Stop without retrying or switching to the main display.")
+        else ActionResult.Failed("target_unavailable", "The app did not appear on the isolated display. Stop without retrying on the main display.")
+        target = opened
+        return ActionResult.Ok()
+    }
+
+    private fun com.wangzan101.mika.core.visual.FrameGrid.hasContent(): Boolean {
+        val insetX = cols / 5
+        val insetY = rows / 8
+        var darkest = 255
+        var lightest = 0
+        for (row in insetY until rows - insetY) for (column in insetX until cols - insetX) {
+            val brightness = luma[row * cols + column]
+            darkest = minOf(darkest, brightness)
+            lightest = maxOf(lightest, brightness)
+        }
+        return lightest - darkest >= 12
     }
 
     private suspend fun send(input: VisualInput): ActionResult = mutex.withLock {
@@ -120,7 +148,8 @@ class RootDisplayScreen(
         }
 
     companion object {
-        private const val LINK_WAIT_POLLS = 40
+        private const val OPEN_WAIT_MS = 6_000L
+        private const val OPEN_SETTLE_MS = 700L
         private const val GRID_WAIT_POLLS = 30
         /** 粘贴和按键都没送出:多半是手机锁着(锁屏时剪贴板谁都读不到),只有纯 ASCII 能逐键打。 */
         const val TEXT_NOT_SENT = "text_not_sent: the text could not be put into the box. While the phone is locked " +

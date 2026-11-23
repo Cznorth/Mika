@@ -91,6 +91,20 @@ class McpUsbSettingsTest {
         assertFalse(usb().enabled.value)
     }
 
+    @Test fun optedInRebootRotatesTheTokenButNeverReenablesAfterOff() {
+        val before = usb()
+        val oldToken = before.enable()
+        before.publish(8765)
+        boot = "6"
+        val after = McpUsbSettings(internal, { boot }, { info }, restoreAcrossBoot = { true })
+        assertTrue(after.enabled.value)
+        assertNotEquals(oldToken, after.token())
+        assertFalse(info.exists())
+        after.disable()
+        boot = "7"
+        assertFalse(McpUsbSettings(internal, { boot }, { info }, restoreAcrossBoot = { true }).enabled.value)
+    }
+
     @Test fun commandsFromTheComputerAndTheNotification() {
         val n = network()
         val u = usb()

@@ -4,6 +4,8 @@ import com.wangzan101.mika.R
 import com.wangzan101.mika.i18n.tr
 import com.wangzan101.mika.i18n.trPlural
 import com.wangzan101.mika.core.uistate.IdleScroll
+import com.wangzan101.mika.core.uistate.ActionResult
+import com.wangzan101.mika.cap.phone.shell.ShellService
 import com.wangzan101.mika.core.cap.web.PagePacing
 import com.wangzan101.mika.core.uistate.PlacePace
 import kotlin.random.Random
@@ -712,12 +714,14 @@ class TaskRun(
                             com.wangzan101.mika.core.uistate.RootDisplayScreen(
                                 com.wangzan101.mika.core.uistate.RootDisplayBackend(driver), driver,
                                 launch = { pkg ->
-                                    if (withContext(Dispatchers.IO) { shell.startApp(display.displayId, pkg) } != 0) false
-                                    else {
-                                        withTimeoutOrNull(4000) {
-                                            while (driver.target()?.packageName != pkg) delay(100)
-                                            true
-                                        } ?: false
+                                    val status = withContext(Dispatchers.IO) { shell.startApp(display.displayId, pkg) }
+                                    if (status != ShellService.START_OK) Log.w("MikaRootDisplay", "launch package=$pkg display=${display.displayId} status=$status")
+                                    when (status) {
+                                        ShellService.START_OK -> ActionResult.Ok()
+                                        ShellService.START_IN_USE_ON_MAIN -> ActionResult.Failed("app_in_use_by_user", "The app still has a task on the main display. Ask the user to close it from Recents before trying again. Do not move it, force stop it or use a shell command.")
+                                        ShellService.START_IN_USE_BY_OTHER -> ActionResult.Failed("app_in_use_by_other_task")
+                                        ShellService.START_NOT_FOUND -> ActionResult.Failed("app_not_found")
+                                        else -> ActionResult.Failed("app_launch_failed", "Android rejected the isolated launch. Stop without retrying with shell commands or on the main display.")
                                     }
                                 },
                                 apps = { withContext(Dispatchers.IO) { launchableApps(service.packageManager, service.packageName) } },
@@ -725,9 +729,7 @@ class TaskRun(
                                 openView = { action, uri, pkg -> withContext(Dispatchers.IO) { shell.startView(display.displayId, action, uri, pkg) } },
                                 grid = {
                                     withContext(Dispatchers.IO) {
-                                        // 先取时间戳再取帧:拿到的帧至少和这个时间戳一样新
-                                        val at = display.lastFrameAt() ?: return@withContext null
-                                        display.latestFrameBitmap()?.let { b ->
+                                        display.latestTimedFrameBitmap()?.let { (at, b) ->
                                             try { com.wangzan101.mika.core.visual.FrameGrid.sample(b.width, b.height, b::getPixel)?.let { at to it } } finally { b.recycle() }
                                         }
                                     }
@@ -941,6 +943,7 @@ class TaskRun(
                 // 在 App 里一步一步操作:动作之间停一会儿,限制浏览快慢的 App 停得更久、屏数有上限(按设置里的操作节奏)
                 appPacing = { pace.appPacing() },
                 appIdleScroll = { IdleScroll(Random.Default) },
+                phoneSystemCommands = !BuildConfig.EXPERIMENTAL_LOCKED_PHONE,
                 // 上传只认本对话工作区里的普通文件(与沙箱同一套路径规则);技能目录、工作区外一律越界
                 workspacePath = web?.let { { p: String -> sandbox.uploadCheck(conversationId, p) } },
                 // 工作区 = 对话:同一对话的追问接着用上一轮的文件,不同对话互不可见

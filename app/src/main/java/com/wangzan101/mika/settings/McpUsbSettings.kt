@@ -22,7 +22,7 @@ import java.util.Base64
  * - 打开时生成一个新令牌;已经开着再打开沿用原来的(电脑重跑一次命令,已经配好的不失效)。
  * - 监听起来后 [publish] 把连接信息写到 [infoFile](外部文件目录,安卓 11 起只有 Mika 和 shell 读得到)。
  * - 关掉时忘掉令牌(下次打开换新的)、删掉连接信息文件。
- * - 不跨重启:开关记着是哪次开机([bootId])打开的,换了一次开机就当关着,顺手清掉上次留下的文件。
+ * - 默认不跨重启；开启 [restoreAcrossBoot] 时保留开关，但生成新令牌。
  *
  * 令牌同时以明文写在连接信息文件里(电脑要读),所以 App 自己的私有目录里也存明文,不另加密。
  */
@@ -32,6 +32,7 @@ class McpUsbSettings(
     private val infoFile: () -> File?,
     private val random: SecureRandom = SecureRandom(),
     migrateTaskOwner: (String) -> Unit = {},
+    restoreAcrossBoot: () -> Boolean = { false },
 ) {
     private val file = File(dir, "mcp-usb.json")
     private val _enabled = MutableStateFlow(false)
@@ -51,6 +52,7 @@ class McpUsbSettings(
         } else {
             file.delete()
             runCatching { infoFile()?.delete() }
+            if (boot != null && t != null && restoreAcrossBoot()) enable()
         }
     }
 
