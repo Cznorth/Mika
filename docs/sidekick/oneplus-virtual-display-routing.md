@@ -78,5 +78,6 @@
 - 修正提交 `e56ca11c` 已推送并经 `pc-build` 在电脑构建（任务 `20261124T102338-mika-e56ca11ce-d8f2`，模块测试与 APK 构建成功，`where=pc`）。产物为 `teardown-e56ca11c/display-routing-debug-resigned.apk`，原证书验签通过。新增 `RootWindowContainer.onDisplayRemoved` 前置会话任务结束，以及 Task 入口的安全拒绝；低层摆放拒绝不再抛异常。实际固件 `Task.removeImmediately()` 和各 `reparent` 重载签名已核对。
 - 在持续持安装锁的激活流程内，将旧模块 APK 和数据另存 `teardown-before-e56ca11c/` 后，于手机时间 `18:27:13 +08` 覆盖更新小模块，`18:27:24 +08` 再次重启加载。至此主动重启累计三次，另有上述由缺陷触发的一次 framework 崩溃重启；未重新安装 Mika 主包。新模块的真机结果仍待验证。
 - 第三次主动重启后，boot ID 为 `482ec51e-8630-46ba-8498-5654bbae027e`，`system_server` PID 为 `4491`，用户 `0` 已 `RUNNING_UNLOCKED`。`acceptance-v6.txt` 等待自然熄屏约 180 秒后退出 `3`，证据目录 `/data/local/tmp/mika-routing.3FNhXy` 为空，未启动 12306；截至 `18:32:11 +08` 仍为 `Awake`、`brightness=1588`，系统最后用户活动仅 94 ms 前，系统进程未重启。还未证明新修正的运行行为。
+- 最后一轮 `acceptance-v7.txt` 同样等待约 180 秒后退出 `3`，返回 `natural_screen_off_not_observed`，证据目录 `/data/local/tmp/mika-routing.ejVZEP`。新模块两轮复测均未进入建屏／启动阶段。验收脚本和采集进程已结束，无 12306 残留任务；安装锁在本轮收尾释放。等待用户可提供自然熄屏窗口后，重新持锁运行最终脚本，不再需要重复原始备份和安装。
 
 剩余工作仍是：自然熄屏后经 root 会话启动 12306，只等待首页并截取虚拟屏；核实启动页与首页 Activity／Task 同属会话虚拟屏，背光双节点全程为 `0`、主屏焦点不变；检查会话退出后的清理。没有取得这些证据前，不按“已修复”结案。
