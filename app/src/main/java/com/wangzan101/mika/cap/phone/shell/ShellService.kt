@@ -322,7 +322,7 @@ class ShellService(
                 Log.e(TAG, "refusing to release display $displayId with unclosed tasks")
                 return@synchronized
             }
-            if (runCatching { routing.close(displayId) }.isFailure) {
+            if (!RootDisplayIsolation.closeWhenDestroyed({ routing.close(displayId) })) {
                 Log.e(TAG, "refusing to release display $displayId while system session is not empty")
                 return@synchronized
             }

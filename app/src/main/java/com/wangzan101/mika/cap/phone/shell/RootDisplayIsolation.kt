@@ -27,4 +27,23 @@ internal object RootDisplayIsolation {
         if (ids.any { !remove(it) }) return false
         return tasks().isEmpty()
     }
+
+    /** removeTask returns before the app acknowledges destroy; the system CLOSE refuses while a
+     * DESTROYING ActivityRecord still exists. Retry until it is gone instead of exiting with the
+     * lease open, which would make the owner's death keep the package's deny binding.
+     */
+    fun closeWhenDestroyed(
+        close: () -> Unit,
+        timeoutMs: Long = 5_000,
+        stepMs: Long = 100,
+        now: () -> Long = System::currentTimeMillis,
+        sleep: (Long) -> Unit = Thread::sleep,
+    ): Boolean {
+        val deadline = now() + timeoutMs
+        while (true) {
+            if (runCatching(close).isSuccess) return true
+            if (now() >= deadline) return false
+            sleep(stepMs)
+        }
+    }
 }

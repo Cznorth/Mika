@@ -45,4 +45,24 @@ class RootDisplayIsolationTest {
             remove = { true },
         ))
     }
+
+    @Test fun systemCloseIsRetriedUntilDestroyingActivitiesAreGone() {
+        var clock = 0L
+        var attempts = 0
+        assertTrue(RootDisplayIsolation.closeWhenDestroyed(
+            close = { if (++attempts < 3) throw SecurityException("session still owns activities") },
+            now = { clock }, sleep = { clock += it },
+        ))
+        assertTrue(attempts == 3)
+    }
+
+    @Test fun systemCloseGivesUpAfterTheDeadline() {
+        var clock = 0L
+        var attempts = 0
+        assertFalse(RootDisplayIsolation.closeWhenDestroyed(
+            close = { attempts++; throw SecurityException("session still owns activities") },
+            timeoutMs = 1_000, stepMs = 100, now = { clock }, sleep = { clock += it },
+        ))
+        assertTrue(attempts == 11)
+    }
 }
