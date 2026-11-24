@@ -36,6 +36,7 @@ public final class SystemRoutingModule implements IXposedHookLoadPackage {
             activityClass = cls("com.android.server.wm.ActivityRecord", loader);
             taskClass = cls("com.android.server.wm.Task", loader);
             Class<?> atms = cls("com.android.server.wm.ActivityTaskManagerService", loader);
+            validateLayout(loader, atms);
             XposedBridge.hookAllConstructors(atms, new XC_MethodHook() {
                 @Override protected void afterHookedMethod(MethodHookParam p) { service = p.thisObject; }
             });
@@ -48,6 +49,7 @@ public final class SystemRoutingModule implements IXposedHookLoadPackage {
                 @Override protected void beforeHookedMethod(MethodHookParam p) {
                     if ((int) p.args[0] != RoutingProtocol.TRANSACTION || !atms.isInstance(p.thisObject)) return;
                     Parcel data = (Parcel) p.args[1], reply = (Parcel) p.args[2];
+                    if (reply == null) { p.setResult(false); return; }
                     try {
                         if (Binder.getCallingUid() != 0) throw new SecurityException("Mika routing requires root");
                         data.enforceInterface(RoutingProtocol.DESCRIPTOR);
@@ -66,6 +68,26 @@ public final class SystemRoutingModule implements IXposedHookLoadPackage {
             ready = false; // A partial install must never authorize the Mirage fallback.
             XposedBridge.log(TAG + ": disabled (unsupported system hooks): " + error);
         }
+    }
+
+    private void validateLayout(ClassLoader loader, Class<?> atms) throws Exception {
+        for (String name : new String[]{"mGlobalLock", "mRootWindowContainer", "mContext"}) XposedHelpers.findField(atms, name);
+        for (String name : new String[]{"info", "launchedFromUid", "intent"}) XposedHelpers.findField(activityClass, name);
+        Class<?> info = cls("android.view.DisplayInfo", loader);
+        for (String name : new String[]{"type", "ownerUid", "flags", "displayGroupId", "uniqueId", "name", "removeMode"}) {
+            XposedHelpers.findField(info, name);
+        }
+        Class<?> token = cls("android.window.WindowContainerToken", loader);
+        inherited(ActivityOptions.class, "setLaunchTaskDisplayArea", token);
+        inherited(ActivityOptions.class, "setLaunchRootTask", token);
+        inherited(ActivityOptions.class, "setLaunchTaskId", int.class);
+        inherited(activityClass, "setTurnScreenOn", boolean.class);
+        Class<?> container = cls("com.android.server.wm.WindowContainer", loader);
+        Class<?> remote = XposedHelpers.findField(container, "mRemoteToken").getType();
+        inherited(remote, "toWindowContainerToken");
+        inherited(container, "getDisplayContent");
+        inherited(container, "forAllActivities", Consumer.class);
+        inherited(cls("com.android.server.power.PowerGroup", loader), "getGroupId");
     }
 
     private void transact(int op, Parcel data, Parcel reply) throws Exception {

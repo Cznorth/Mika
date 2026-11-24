@@ -32,7 +32,7 @@ internal class RootTaskRouting {
         catch (t: Throwable) { throw RootDisplayRoutingUnavailable(t) }
     }
     fun open(display: Int, identity: String) {
-        check(display !in leases)
+        check(!leases.containsKey(display))
         val token = Binder()
         request(RoutingProtocol.OPEN, token) { it.writeInt(display); it.writeString(identity) }
         leases[display] = token
