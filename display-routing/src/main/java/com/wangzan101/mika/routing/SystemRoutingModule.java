@@ -10,7 +10,9 @@ import android.os.Parcel;
 import android.util.Log;
 import java.lang.reflect.Method;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -88,6 +90,8 @@ public final class SystemRoutingModule implements IXposedHookLoadPackage {
         inherited(remote, "toWindowContainerToken");
         inherited(container, "getDisplayContent");
         inherited(container, "forAllActivities", Consumer.class);
+        inherited(taskClass, "removeImmediately");
+        inherited(activityClass, "getTask");
         inherited(cls("com.android.server.power.PowerGroup", loader), "getGroupId");
     }
 
@@ -237,34 +241,92 @@ public final class SystemRoutingModule implements IXposedHookLoadPackage {
 
     private void installPlacementHooks(ClassLoader loader) throws Exception {
         Class<?> container = cls("com.android.server.wm.WindowContainer", loader);
+        // Display removal runs on android.ui, outside an app's Binder request. End the
+        // leased tasks before the vendor can return them to display 0; an exception
+        // from a low-level reparent here would kill system_server instead of refusing
+        // the move. Keep deny bindings until the root owner explicitly closes.
+        Method removed = inherited(cls("com.android.server.wm.RootWindowContainer", loader), "onDisplayRemoved", int.class);
+        XposedBridge.hookMethod(removed, new XC_MethodHook() {
+            @Override protected void beforeHookedMethod(MethodHookParam p) {
+                if (routes.isEmpty() || service == null) return;
+                try {
+                    synchronized (field(service, "mGlobalLock")) {
+                        int display = (int) p.args[0];
+                        Set<Object> tasks = new LinkedHashSet<>();
+                        for (Object record : activities(p.thisObject)) {
+                            SessionRoutes.Lease lease = routeForActivity(record);
+                            if (lease == null || lease.display != display) continue;
+                            routes.revoke(lease);
+                            Object task = call(record, "getTask");
+                            if (task != null) tasks.add(task);
+                        }
+                        for (Object task : tasks) call(task, "removeImmediately");
+                        if (!tasks.isEmpty()) Log.w(TAG, "ended " + tasks.size() + " leased tasks before removing display=" + display);
+                    }
+                } catch (Throwable error) {
+                    // Placement guards below still suppress a move. Never let a
+                    // rejection escape the system's asynchronous display listener.
+                    Log.e(TAG, "leased display removal cleanup failed", error);
+                }
+            }
+        });
+
+        // Refuse at Task's entry point before it changes visibility/parent state.
+        int taskGuards = 0;
+        for (Method method : taskClass.getDeclaredMethods()) {
+            if (!method.getName().equals("reparent") || method.getParameterCount() < 1 ||
+                    !container.isAssignableFrom(method.getParameterTypes()[0])) continue;
+            if (method.getReturnType() != void.class && method.getReturnType() != boolean.class) {
+                throw new NoSuchMethodException("unsupported Task.reparent result");
+            }
+            final boolean returnsBoolean = method.getReturnType() == boolean.class;
+            XposedBridge.hookMethod(method, new XC_MethodHook() {
+                @Override protected void beforeHookedMethod(MethodHookParam p) {
+                    if (routes.isEmpty()) return;
+                    if (refusePlacement(p.thisObject, p.args[0])) p.setResult(returnsBoolean ? false : null);
+                }
+            });
+            taskGuards++;
+        }
+        if (taskGuards == 0) throw new NoSuchMethodException("Task reparent guards missing");
         int guarded = 0;
         for (Method method : container.getDeclaredMethods()) {
             String name = method.getName();
             if ((!name.equals("reparent") && !name.equals("addChild")) || method.getParameterCount() < 1 ||
                     !container.isAssignableFrom(method.getParameterTypes()[0])) continue;
+            if (method.getReturnType() != void.class) throw new NoSuchMethodException("unsupported WindowContainer placement result");
             boolean reparent = name.equals("reparent");
             XposedBridge.hookMethod(method, new XC_MethodHook() {
                 @Override protected void beforeHookedMethod(MethodHookParam p) {
                     if (routes.isEmpty()) return;
                     Object child = reparent ? p.thisObject : p.args[0];
                     if (child == null || (!taskClass.isInstance(child) && !activityClass.isInstance(child))) return;
-                    try {
-                        SessionRoutes.Lease lease = taskClass.isInstance(child) ? routeForTask(child) : routeForActivity(child);
-                        if (lease == null) lease = launching.get();
-                        if (lease == null) return;
-                        Object parent = reparent ? p.args[0] : p.thisObject;
-                        if (parent == null) return; // Removal is allowed; adding to another display is not.
-                        int destination = displayOf(parent);
-                        if (destination >= 0 && destination != lease.display) {
-                            throw new SecurityException("refusing task placement on display=" + destination + " expected=" + lease.display);
-                        }
-                        if (destination >= 0) live(lease);
-                    } catch (Throwable error) { p.setThrowable(block(error)); }
+                    Object parent = reparent ? p.args[0] : p.thisObject;
+                    if (refusePlacement(child, parent)) p.setResult(null);
                 }
             });
             guarded++;
         }
         if (guarded < 2) throw new NoSuchMethodException("WindowContainer placement guards missing");
+    }
+
+    private boolean refusePlacement(Object child, Object parent) {
+        if (parent == null) return false; // Removal is allowed; adding to another display is not.
+        try {
+            SessionRoutes.Lease lease = taskClass.isInstance(child) ? routeForTask(child) : routeForActivity(child);
+            if (lease == null) lease = launching.get();
+            if (lease == null) return false;
+            int destination = displayOf(parent);
+            if (destination >= 0 && destination != lease.display) {
+                Log.w(TAG, "suppressed task placement on display=" + destination + " expected=" + lease.display);
+                return true;
+            }
+            if (destination >= 0) live(lease);
+            return false;
+        } catch (Throwable error) {
+            Log.w(TAG, "suppressed unavailable session placement", error);
+            return true;
+        }
     }
 
     private void installWakeHooks(ClassLoader loader) throws Exception {

@@ -14,14 +14,15 @@ out=$(mktemp -d /data/local/tmp/mika-routing.XXXXXX)
 child= monitor= events=
 cleanup() {
     trap - EXIT HUP INT TERM
-    exec 3>&- 2>/dev/null || true
+    { exec 3>&-; } 2>/dev/null || true
     if [ -n "$child" ]; then wait "$child" || true; fi
     for pid in "$monitor" "$events"; do
         if [ -n "$pid" ]; then kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true; fi
     done
     echo "evidence=$out"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 130' HUP INT TERM
 
 is_off() {
     [ "$(cat "$backlight")" = 0 ] && [ "$(cat "$actual_backlight")" = 0 ] &&
@@ -42,7 +43,12 @@ foreground=$(printf '%s\n' "$activities" | sed -n 's/.*topResumedActivity=.* u[0
 if [ -n "$foreground" ] && dumpsys package "$foreground" | grep -Eq 'category=0([[:space:]]|$)|\bIS_GAME\b'; then
     echo game_active; exit 4
 fi
-focus() { dumpsys window windows | grep -E 'mCurrentFocus=|mFocusedApp='; }
+focus() {
+    dumpsys window displays | awk '
+        /Display: mDisplayId=/ { primary = /mDisplayId=0([[:space:]]|$)/ }
+        primary && /mCurrentFocus=|mFocusedApp=/ { print; count++ }
+        END { exit count != 2 }'
+}
 focus > "$out/focus-before"
 
 z=$(pidof zygote64 | cut -d ' ' -f1)
@@ -93,10 +99,10 @@ send '{"op":"status"}'
 for attempt in $(seq 1 35); do
     sleep 0.5
     dark
-    if grep -Eq '"op":"status".*com\.MobileTicket/.*MainActivity' "$out/console"; then break; fi
+    if grep -Eq '"op":"status".*"top":"com\.MobileTicket\.([^"]*\.)?MainActivity"' "$out/console"; then break; fi
     send '{"op":"status"}'
 done
-grep -Eq '"op":"status".*com\.MobileTicket/.*MainActivity' "$out/console" || { cat "$out/console"; exit 9; }
+grep -Eq '"op":"status".*"top":"com\.MobileTicket\.([^"]*\.)?MainActivity"' "$out/console" || { cat "$out/console"; exit 9; }
 send '{"op":"shot","wait_ms":1200}'
 for attempt in $(seq 1 30); do
     sleep 0.1

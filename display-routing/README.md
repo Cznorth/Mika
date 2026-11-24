@@ -48,7 +48,10 @@ Mika APK before any update.
 
 Deployment must hold `/run/lock/sidekick-android-install.lock`, back up the old APK,
 app data, and LSPosed configuration, and use an in-place update. Never uninstall Mika.
-Configure this module for `android` only. Do not install the paired Mika update unless
+Configure this module for the Android system only (`android` in load-package
+callbacks; this LSPosed build stores the system-server scope as `system`, not
+`android`). Verify the scope identity against the running LSPosed implementation.
+Do not install the paired Mika update unless
 the module activation window is available: an inactive module makes the new helper
 refuse all root virtual sessions. Do not modify LSPosed's SQLite files while its daemon
 is running; use its supported manager/developer interface.

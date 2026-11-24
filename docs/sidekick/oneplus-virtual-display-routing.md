@@ -1,6 +1,8 @@
 # 一加 15：虚拟屏后续 Activity 路由（T-1279）
 
-2026-11-23，设备为 PLK110、ColorOS、Android SDK 37，运行 Mika Dev `a30a81e0`。问题未修复，未覆装。
+**2026-11-24 当前状态：配套 Mika 和系统路由模块已覆盖安装并激活；12306 熄屏真机验收尚未完成，不能认定修复通过。** 下方“未装机／等待授权”段落为此前接续历史，最新部署情况见文末。
+
+2026-11-23 初始状态：设备为 PLK110、ColorOS、Android SDK 37，运行 Mika Dev `a30a81e0`，当时问题未修复、未覆装。
 
 ## 已确认
 
@@ -58,3 +60,20 @@
 `tools/mika/check-root-routing.sh` 已提交，`sh -n` 通过，**尚未在手机执行**。窗口确认后先持 `/run/lock/sidekick-android-install.lock`，按既定规范核验原证书、备份 APK／数据／LSPosed 配置、完成模块激活与覆盖更新（绝不卸载），同步 watchdog 审批 APK，再运行无输入验收。脚本等待自然熄屏，使用 `IsolatedSessionMain` 启动 12306、等待 `MainActivity` 并截取虚拟屏；记录 50 ms 间隔的实际背光、路由事件、首页 Activity dump 及前后焦点。任何非零背光读数都会停止，不点击、不下单。证据保留在手机 `/data/local/tmp/mika-routing.XXXXXX/`，还须人工检查首页图片和全部 Activity／Task 落点，才能认定修复通过。
 
 原有未提交的 `RootDisplayScreenTest.kt` 调整及 watchdog 两个文件保持原样，未混入本轮提交。
+
+## 2026-11-24 获授权后的部署与验收进展
+
+用户已明确同意模块激活和手机重启。本轮全程持 `/run/lock/sidekick-android-install.lock`，核验现装 Mika 的原始签名并完成备份后，覆盖安装配套 Mika 与路由模块；未卸载、清数据或降级，也未打开 Mika 的 Activity。
+
+- 手机备份目录为 `/data/adb/mika-routing-backup-20261124-activation`，包含原 Mika APK、CE／DE／外部应用数据、包状态、watchdog 配置、启动前 Activity 及 LSPosed 配置；LSPosed 数据库在正常停止 daemon 后另做完整离线 DB／WAL／SHM 备份，原文件保留。
+- 实装产物为报告根目录下 `mika-dev-4b059bf2-signed.apk` 与 `display-routing-f50a9015-signed.apk`。两者验签通过并与现装 Mika 的原证书 `94ee3378d98379b17d9730f93ba27cad2cb3798f3cd10adcd6a6257fbc639e97` 一致。Mika watchdog 的批准 APK 摘要已同步。
+- 该定制 LSPosed `2.2.1 (7912)` 的系统作用域在数据库中叫 **`system`**，load-package 回调仍叫 `android`。首轮误按 `android` 配置，重启后未加载；核对实际 daemon／framework 实现后，正常停止 daemon、完整离线备份并修正为仅 `system` 用户 `0` 作用域，再次重启。累计重启两次，没有启用 developer mode 或修改其他模块作用域。
+- 第二次重启后 boot ID 为 `8c6a1b65-6b4b-4cb1-b506-d8890da587c3`，用户已 `RUNNING_UNLOCKED`，Mika 前台服务与 root helper 已恢复。对专用 Binder 事务的故意错误接口调用返回堆栈包含 `SystemRoutingModule$2.beforeHookedMethod`，证明系统钩子已实际执行；该错误格式请求不能代替正确协议握手及路由验收。
+- 真机验收脚本已修正 Android 17 的主屏焦点读取位置：从 `dumpsys window displays` 只提取 Display 0；背光同时读取 `brightness` 和 `actual_brightness`，因为后者在本机亮屏时也可能为 `0`；信号退出会触发清理。
+- 当前几轮验收均在等待自然熄屏阶段退出，未启动 12306。手机本地时间 `2026-11-24 18:09:14 +08` 仍为 `Awake`／显示 `ON`，`brightness=1588`、`actual_brightness=0`，系统最后用户活动不足一秒，正常熄屏超时为 30 秒。没有强制关屏、修改超时或操作物理屏。首次焦点读取脚本错误属于验收脚本早退，也不能当作路由失败。
+- 服务器详细证据保存在 `/opt/sidekick-work/reports/mika-routing-20261124/activation/`。修正后的 `acceptance-v4.txt` 同样等待自然熄屏约 180 秒后返回 `natural_screen_off_not_observed`（退出码 `3`），手机证据目录为 `/data/local/tmp/mika-routing.XjVUXj`；没有进入建屏或启动 App 阶段，未取得首页截图、正确协议握手和零背光全链路结论。已请求手机静置窗口。
+- `acceptance-v5.txt` 随后终于进入自然熄屏窗口并完成正确协议握手：`display=3`，启动页 `WelcomeGuideActivity` 和首页 `MainActivity` 均在 Task `35332`，系统日志也确认两次启动都被模块约束在显示屏 `3`。但验收脚本错误地以 `包名/Activity` 匹配实际返回的完整类名，未及时进入截图步骤；约 11 秒后背光非零，脚本按保护条件中止，不能算全程零背光通过。已用这份真实 console 修正首页匹配规则。
+- 同一次退出暴露了严重的系统钩子缺陷：`2026-11-24 18:16:02 +08`，ColorOS 的显示屏移除回调试图把 Task 搬回主屏，`WindowContainer.reparent` 的拒绝异常从 `android.ui` 线程逃逸，导致 `system_server` 从 PID `4476` 重启为 `22450`（内核 boot ID 未变）。崩溃堆栈明确指向本模块，不归咎于用户活动。已停止继续验收，正在修正为移除显示屏前先结束会话任务，并在 Task／WindowContainer 的迁移入口安全拒绝，禁止异常杀死系统。
+- 本次手机证据目录为 `/data/local/tmp/mika-routing.lFXBd0`，完整副本为报告 `activation/v5-evidence.tar`，系统崩溃记录为 `activation/crash-after-v5.txt`。尚无首页截图或成功的关闭清理证明。
+
+剩余工作仍是：自然熄屏后经 root 会话启动 12306，只等待首页并截取虚拟屏；核实启动页与首页 Activity／Task 同属会话虚拟屏，背光双节点全程为 `0`、主屏焦点不变；检查会话退出后的清理。没有取得这些证据前，不按“已修复”结案。
