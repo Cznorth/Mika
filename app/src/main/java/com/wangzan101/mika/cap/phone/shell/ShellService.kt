@@ -68,6 +68,7 @@ class ShellService(
     private val displayIdentities = HashMap<Int, String>()
     private val closingDisplays = HashSet<Int>()
     private val rootIsolation: Boolean get() = Process.myUid() == 0
+    private val routing = RootTaskRouting()
     private var orientationWatch: DisplayOrientationWatch? = null
     private val requestedOrientations = ConcurrentHashMap<Int, Int>()
     /** 被静音的包 → 静音前的 PLAY_AUDIO 模式("default" 表示原先未设置),落在 [stateDir] 里,进程被杀后下次启动接着恢复。 */
@@ -110,21 +111,30 @@ class ShellService(
     }
 
     private fun createVirtualDisplay(surface: Surface, width: Int, height: Int, dpi: Int, trusted: Boolean): Int {
+        // No display or Mirage registration until system_server has all required guards installed.
+        routing.requireAvailable()
         val flags = displayFlags(Build.VERSION.SDK_INT, trusted)
         val vd = displayManager.createVirtualDisplay("mika-agent", width, height, dpi, surface, flags)
         val id = vd.display.displayId
         val group = try {
-            // 独立电源组只解决熄屏出帧，并不能约束 App 后续启动的 Activity/Task。
-            // Mirage mode 4 会把部分无来源启动改派到主屏；系统任务隔离尚未实现前禁止此回退。
-            RootDisplayIsolation.requireNativeGroup(id, displayGroup(id))
+            var current = displayGroup(id)
+            if (current == 0) {
+                check(attachMirage(id, width, height, dpi)) { "independent display group unavailable" }
+                current = waitForGroup(id)
+            }
+            RootDisplayIsolation.requireNativeGroup(id, current)
         } catch (t: Throwable) {
+            detachMirage(id)
             vd.release()
             throw t
         }
-        val identity = displayIdentity(id) ?: run { vd.release(); error("display identity unavailable") }
+        val identity = displayIdentity(id) ?: run { detachMirage(id); vd.release(); error("display identity unavailable") }
+        try { routing.open(id, identity) } catch (t: Throwable) {
+            detachMirage(id); vd.release(); throw RootDisplayRoutingUnavailable(t)
+        }
         synchronized(displays) {
             displayIdentities[id] = identity
-            displays[id] = { vd.release() }
+            displays[id] = { detachMirage(id); vd.release() }
         }
         try {
             setFullscreenWindowingMode(id)
@@ -142,7 +152,7 @@ class ShellService(
      * ColorOS 16 的普通虚拟屏(带 OWN_DISPLAY_GROUP 也一样)都被分进默认组,主屏熄屏、锁屏时跟着灭,出不了帧。
      * 系统自己的「后台流转」屏(OplusMirageWindowManager,castMode 4)可以要独立显示组:建出来是 TRUSTED、
      * OWN_DISPLAY_GROUP、ALWAYS_UNLOCKED,自成 power group,由系统持唤醒锁,主屏照样熄着、锁着。
-     * 帧送到我们给的 Surface。建屏的进程死掉时系统按 pid 收回。不可用(非 ColorOS、接口变了、没进独立组)时返回 null,走普通虚拟屏。
+     * 仅在 system_server 路由钩子就绪后登记；没有独立组或会话登记失败时释放空屏并拒绝启动。
      */
     /** 改尺寸后系统异步重新分组:最多等 1 秒。 */
     private fun waitForGroup(id: Int): Int? {
@@ -290,12 +300,16 @@ class ShellService(
             displayIdentities[displayId]
         }
         if (!rootIsolation) return displayId > Display.DEFAULT_DISPLAY
-        return RootDisplayIsolation.live(displayId, expected, displayIdentity(displayId), displayGroup(displayId))
+        return RootDisplayIsolation.live(displayId, expected, displayIdentity(displayId), displayGroup(displayId)) && routing.check(displayId)
     }
 
     override fun releaseDisplay(displayId: Int): Unit = synchronized(launchLock) {
         if (rootIsolation && synchronized(displays) { displayId in displays }) {
             synchronized(displays) { closingDisplays += displayId }
+            if (runCatching { routing.beginClose(displayId) }.isFailure) {
+                Log.e(TAG, "refusing to release display $displayId without system close barrier")
+                return@synchronized
+            }
             // ColorOS can reparent tasks to display 0 when its stream display is detached.
             // Keep the display quarantined if task enumeration/removal fails.
             val closed = runCatching {
@@ -306,6 +320,10 @@ class ShellService(
             }.getOrDefault(false)
             if (!closed) {
                 Log.e(TAG, "refusing to release display $displayId with unclosed tasks")
+                return@synchronized
+            }
+            if (runCatching { routing.close(displayId) }.isFailure) {
+                Log.e(TAG, "refusing to release display $displayId while system session is not empty")
                 return@synchronized
             }
         }
@@ -728,7 +746,12 @@ class ShellService(
             Log.e(TAG, "cannot inspect main-screen tasks", t)
             return START_ERROR
         }
-        val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
+        if (rootIsolation && intent.component == null) {
+            val (pkg, cls) = candidates.singleOrNull() ?: return START_UNRESOLVED
+            intent.component = ComponentName(pkg, cls)
+        }
+        val options = if (rootIsolation) launchOptions(displayId, intent.component!!.packageName, intent)
+            else ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
         val asShell = try {
             val start = taskManager.javaClass.methods.first { it.name == "startActivityAsUser" && it.parameterTypes.size == 12 }
             if (rootIsolation && !ownDisplay(displayId)) return START_ERROR
@@ -769,7 +792,8 @@ class ShellService(
         if (component.className != SystemIntents.OWN_PAGE_CLASS || (mine.isNotEmpty() && component.packageName !in mine)) return START_INVALID_LINK
         // 每次都从头开一页:旧的那一页连同它的任务清掉,新的一定在 Mika 屏的最上面
         val page = Intent().setComponent(component).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-        val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId).toBundle()
+        val options = if (rootIsolation) launchOptions(displayId, component.packageName, page).toBundle()
+            else ActivityOptions.makeBasic().setLaunchDisplayId(displayId).toBundle()
         val ok = try {
             val start = taskManager.javaClass.methods.first { it.name == "startActivityAsUser" && it.parameterTypes.size == 12 }
             if (rootIsolation && !ownDisplay(displayId)) return START_ERROR
@@ -794,6 +818,7 @@ class ShellService(
         check(ownDisplay(displayId)) { "display lease expired" }
         val options = ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
         if (rootIsolation) {
+            routing.bind(displayId, pkg ?: error("isolated launch requires an explicit resolved package"), myUser)
             val existing = pkg?.let { name -> tasksOn(displayId).firstOrNull { isCopy(it, name, myUser) } }
             if (existing == null) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
             else ActivityOptions::class.java.getDeclaredMethod("setLaunchTaskId", Int::class.java)

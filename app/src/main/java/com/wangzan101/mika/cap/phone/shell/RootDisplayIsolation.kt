@@ -1,8 +1,8 @@
 package com.wangzan101.mika.cap.phone.shell
 
 /** An independent power group alone does not confine later Activity/Task launches. */
-internal class RootDisplayRoutingUnavailable : IllegalStateException(
-    "Native independent display unavailable; ColorOS Mirage task routing is not isolated",
+internal class RootDisplayRoutingUnavailable(cause: Throwable? = null) : IllegalStateException(
+    "System Activity/Task routing hooks are unavailable; virtual sessions cannot start safely", cause,
 )
 
 /** Fail closed on a dead/reused display or loss of the independent power group. */
