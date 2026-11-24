@@ -59,3 +59,9 @@ Device acceptance remains mandatory: wait for natural screen-off, use Mika's
 `MainActivity` on the same virtual display, capture that display only, record actual
 backlight at 50 ms intervals, and confirm display-0 focus stays unchanged. Stop on any
 nonzero reading. Do not tap, order, or wake the phone for this check.
+
+`tools/mika/check-root-routing.sh` performs the bounded, no-input device run and
+leaves the console output, system routing events, activity dump, backlight samples,
+focus comparison, and virtual home screenshot in a private device directory. It does
+not install anything or claim visual/route acceptance automatically. Review those
+files and the screenshot before marking this issue fixed.

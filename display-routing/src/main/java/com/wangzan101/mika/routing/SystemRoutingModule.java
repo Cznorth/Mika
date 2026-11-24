@@ -53,6 +53,7 @@ public final class SystemRoutingModule implements IXposedHookLoadPackage {
                     try {
                         if (Binder.getCallingUid() != 0) throw new SecurityException("Mika routing requires root");
                         data.enforceInterface(RoutingProtocol.DESCRIPTOR);
+                        service = p.thisObject;
                         int op = data.readInt();
                         Object lock = field(p.thisObject, "mGlobalLock");
                         synchronized (lock) { transact(op, data, reply); }
