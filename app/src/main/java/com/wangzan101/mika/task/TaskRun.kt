@@ -691,6 +691,10 @@ class TaskRun(
                     if (BuildConfig.DEBUG) Log.i("MikaRootDisplay", "connectPhone selecting RootDisplay backend experimental=${com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE}")
                     connectRootDisplayPhone(
                         enabled = com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE,
+                        log = { message, error ->
+                            if (error == null) Log.i("MikaRootDisplay", message)
+                            else Log.e("MikaRootDisplay", message, error)
+                        },
                         initialize = { recovery.beginRun(shell, key) },
                         onConnected = {
                             val binder = shell.asBinder()
