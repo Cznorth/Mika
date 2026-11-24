@@ -6,7 +6,8 @@ umask 077
 
 [ "$(id -u)" = 0 ]
 [ "$(getprop ro.product.device)" = OP60FFL1 ]
-backlight=/sys/class/backlight/panel0-backlight/actual_brightness
+backlight=/sys/class/backlight/panel0-backlight/brightness
+actual_backlight=/sys/class/backlight/panel0-backlight/actual_brightness
 shot=/data/local/tmp/mika-isolated-session.png
 [ ! -e "$shot" ] || { echo existing_session_screenshot; exit 2; }
 out=$(mktemp -d /data/local/tmp/mika-routing.XXXXXX)
@@ -23,7 +24,7 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 is_off() {
-    [ "$(cat "$backlight")" = 0 ] &&
+    [ "$(cat "$backlight")" = 0 ] && [ "$(cat "$actual_backlight")" = 0 ] &&
         dumpsys display | awk '/mCommittedState=/ && !seen++ { off = /mCommittedState=OFF$/ } END { exit !off }'
 }
 # Wait for the user's normal screen timeout. Never send a power key or force sleep.
@@ -55,8 +56,10 @@ mkfifo "$out/commands"
 (
     while :; do
         read -r level < "$backlight" || level=unreadable
-        printf '%s %s\n' "$(cut -d ' ' -f1 /proc/uptime)" "$level"
-        if [ "$level" != 0 ]; then : > "$out/lit"; fi
+        read -r actual < "$actual_backlight" || actual=unreadable
+        read -r elapsed rest < /proc/uptime
+        printf '%s %s %s\n' "$elapsed" "$level" "$actual"
+        if [ "$level" != 0 ] || [ "$actual" != 0 ]; then : > "$out/lit"; fi
         sleep 0.05
     done
 ) > "$out/backlight" &
