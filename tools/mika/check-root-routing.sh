@@ -34,12 +34,13 @@ for attempt in $(seq 1 90); do
     sleep 2
 done
 is_off || { echo natural_screen_off_not_observed; exit 3; }
-activities=$(dumpsys activity activities)
-if printf '%s\n' "$activities" | grep -Eq 'com\.MobileTicket|Display #[1-9]'; then
+# The dump exceeds ARG_MAX for /system/bin/printf; keep it as a file (also evidence).
+dumpsys activity activities > "$out/activities-before"
+if grep -Eq 'com\.MobileTicket|Display #[1-9]' "$out/activities-before"; then
     echo existing_app_or_virtual_display; exit 4
 fi
 if dumpsys telephony.registry | grep -Eq 'mCallState=[12]'; then echo call_active; exit 4; fi
-foreground=$(printf '%s\n' "$activities" | sed -n 's/.*topResumedActivity=.* u[0-9][0-9]* \([^/ ]*\)\/.*/\1/p' | head -1)
+foreground=$(sed -n 's/.*topResumedActivity=.* u[0-9][0-9]* \([^/ ]*\)\/.*/\1/p' "$out/activities-before" | head -1)
 if [ -n "$foreground" ] && dumpsys package "$foreground" | grep -Eq 'category=0([[:space:]]|$)|\bIS_GAME\b'; then
     echo game_active; exit 4
 fi
@@ -110,7 +111,7 @@ for attempt in $(seq 1 30); do
     if grep -q '"path"' "$out/console"; then break; fi
 done
 grep -q '"path"' "$out/console"
-cp "$shot" "$out/home.png"
+mv "$shot" "$out/home.png"
 dumpsys activity activities > "$out/activities-home"
 send '{"op":"exit"}'
 exec 3>&-

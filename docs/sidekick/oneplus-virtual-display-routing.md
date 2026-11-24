@@ -80,4 +80,15 @@
 - 第三次主动重启后，boot ID 为 `482ec51e-8630-46ba-8498-5654bbae027e`，`system_server` PID 为 `4491`，用户 `0` 已 `RUNNING_UNLOCKED`。`acceptance-v6.txt` 等待自然熄屏约 180 秒后退出 `3`，证据目录 `/data/local/tmp/mika-routing.3FNhXy` 为空，未启动 12306；截至 `18:32:11 +08` 仍为 `Awake`、`brightness=1588`，系统最后用户活动仅 94 ms 前，系统进程未重启。还未证明新修正的运行行为。
 - 最后一轮 `acceptance-v7.txt` 同样等待约 180 秒后退出 `3`，返回 `natural_screen_off_not_observed`，证据目录 `/data/local/tmp/mika-routing.ejVZEP`。新模块两轮复测均未进入建屏／启动阶段。验收脚本和采集进程已结束，无 12306 残留任务；安装锁在本轮收尾释放。等待用户可提供自然熄屏窗口后，重新持锁运行最终脚本，不再需要重复原始备份和安装。
 
+## 2026-11-24 晚：v8 熄屏验收与会话关闭修正（WSL 接续）
+
+- `19:24:54 +08` 手机为 `Dozing`、两个背光节点均为 `0`，安装锁空闲。持锁运行 `acceptance-v8.txt`（证据目录 `/data/local/tmp/mika-routing.Vpx3F7`，`system_server` 仍为 PID `4491`）。
+- **路由通过**：握手 `display=3`；`WelcomeGuideActivity` 与带 `LAUNCH_SINGLE_TASK` 的 `MainActivity` 都在虚拟屏 3、同一 Task `35340`，系统日志两次 `MikaRouting: launch … display=3`，ColorOS `TaskLaunchParamsModifier` 的最终 `display-id=3`。首页截图 `home.png` 取得。82 个 50 ms 背光样本两节点全为 `0`；电源日志只有 `WAKE_REASON_DISPLAY_GROUP_ADDED groupId: 1`（虚拟屏自己的组），没有唤醒默认组。
+- **清理失败**（脚本退出 `11 session_cleanup_incomplete`）：`exit` 时 `releaseDisplay` 先 `removeTask`，但 `MainActivity` 仍处于 `DESTROYING`；系统 CLOSE 遍历全部 Activity 看到它而拒绝，`releaseDisplay` 随即放弃，进程退出触发 `owner died; retaining deny bindings for display=3`，随后显示屏移除钩子 `ended 1 leased tasks`。会话 Activity 没有逃逸到主屏，但被吊销的租约仍保留 12306 的包/UID 绑定，**此后用户在主屏正常打开 12306 也会被 `START_ABORTED` 拒绝**，直到重启或新的会话重新绑定并正常关闭。
+- 修正 `5cef3429`：`RootDisplayIsolation.closeWhenDestroyed` 在移除任务后每 100 ms 重试系统 CLOSE，最多 5 秒，等 Activity 真正销毁再解绑；超时仍保持原来的拒绝释放。只改 Mika 主包，系统模块不变，不需要重启。
+- 构建：服务器 5.8G 内存，**禁止在服务器跑 Gradle**（本轮一次服务器本地编把 swap 打满，已被终止）；电脑 `pc-build` 代理当时卡在经慢链路拉源码。改为 Windows 本地 `gradlew.bat -PdevInstall :app:testDebugUnitTest --tests …RootDisplayIsolationTest :app:assembleDebug`（7 项零失败），把未签名 APK 以服务器上旧 `mika-dev-4b059bf2-signed.apk` 为基底 rsync 增量上传（120 MB 中只传 17 MB），服务器用 `/opt/android-build/mika-original-debug.keystore` 重签，证书 `94ee3378…` 一致，产物 `close-retry-5cef3429/mika-dev-5cef3429-signed.apk`（sha256 `a625686a…`）。
+- 安装：持锁，备份原 APK、CE/DE/外部数据到 `/data/adb/mika-routing-backup-20261124-214235-pre5cef`；服务器到手机链路不稳，整包推送中断，改 8 MB 分块逐块校验后在手机拼接（注意 `phone.py push` 覆盖时会留下 `*.bak-*`，拼接要用显式文件名），`pm install -r` 覆盖成功，watchdog `apk.sha256` 已同步。手机在 20:48 另有一次重启（非本轮操作），系统模块随开机加载。
+- **`acceptance-v9.txt` 通过（退出 0）**，证据 `/data/local/tmp/mika-routing.eYqYg0`，服务器副本 `close-retry-5cef3429/v9/home.png`：握手 `display=7`；`WelcomeGuideActivity` → `MainActivity`（`LAUNCH_SINGLE_TASK`，来自 12306 自身 uid 10417）同在 Task `35364`、虚拟屏 7；首页 dump 中 12306 的 28 条记录全在 Display #7，主屏 0 条；81 个背光样本两节点全 `0`，电源只唤醒虚拟屏组 1；主屏焦点前后一致；退出走正常 CLOSE，没有 `owner died`、没有显示屏移除兜底，退出后系统中无 12306 Activity。截图为 12306 首页（蓝色顶栏、出发/到达站、查询车票按钮、底部标签栏）。
+- v9 时脚本的两项前置检查因 `dumpsys` 输出超过 `printf` 参数上限而被跳过（会话自身的通话/游戏检查和系统 BIND 的“已有主屏 Activity 则拒绝绑定”仍生效）；已改为写入 `activities-before` 文件再匹配，截图改为移入证据目录，不再残留 `mika-isolated-session.png`。
+
 剩余工作仍是：自然熄屏后经 root 会话启动 12306，只等待首页并截取虚拟屏；核实启动页与首页 Activity／Task 同属会话虚拟屏，背光双节点全程为 `0`、主屏焦点不变；检查会话退出后的清理。没有取得这些证据前，不按“已修复”结案。
