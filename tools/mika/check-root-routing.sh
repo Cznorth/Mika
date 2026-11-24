@@ -115,8 +115,14 @@ dumpsys activity activities > "$out/activities-home"
 send '{"op":"exit"}'
 exec 3>&-
 wait "$child"; child=
+sleep 1
 dark
 is_off || { echo screen_changed_during_close; exit 5; }
+dumpsys activity activities > "$out/activities-after"
+if grep -q 'com\.MobileTicket' "$out/activities-after" ||
+        grep -q 'owner died; retaining deny bindings' "$out/events"; then
+    echo session_cleanup_incomplete; exit 11
+fi
 focus > "$out/focus-after"
 cmp -s "$out/focus-before" "$out/focus-after" || { echo main_focus_changed; exit 10; }
 echo 'home_captured_backlight_samples_zero_focus_unchanged'
