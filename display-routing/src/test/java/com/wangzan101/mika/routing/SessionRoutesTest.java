@@ -62,4 +62,10 @@ public class SessionRoutesTest {
         assertThrows(SecurityException.class, () -> routes.bind(lease, app, 1010582));
         assertThrows(SecurityException.class, () -> routes.bind(lease, new SessionRoutes.App("system", 1), 101000));
     }
+    @Test public void sharedProcessPackagesInheritTheSameUidConstraint() {
+        var lease = session(14); routes.bind(lease, app, 10582);
+        assertSame(lease, routes.activity("shared.uid.alias", 0, 10582));
+        assertNull(routes.activity(app.packageName(), 10, 1010582));
+        assertThrows(SecurityException.class, () -> routes.activity(app.packageName(), 10, 10582));
+    }
 }

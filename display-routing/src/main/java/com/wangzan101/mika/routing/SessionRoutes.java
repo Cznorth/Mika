@@ -53,6 +53,12 @@ final class SessionRoutes {
     }
     synchronized Lease app(String pkg, int user) { return apps.get(new App(pkg, user)); }
     synchronized Lease uid(int uid) { return uids.get(uid); }
+    synchronized Lease activity(String pkg, int user, int uid) {
+        if (uid / 100000 != user) throw new SecurityException("activity UID/user mismatch");
+        Lease named = app(pkg, user), process = uids.get(uid);
+        if (named != null && process != null && named != process) throw new SecurityException("conflicting package/UID session");
+        return named != null ? named : process;
+    }
     synchronized Lease resolve(String pkg, int user, int callingUid, Lease source) {
         Lease target = app(pkg, user), caller = uid(callingUid);
         Lease found = target != null ? target : (source != null ? source : caller);

@@ -307,13 +307,16 @@ public final class SystemRoutingModule implements IXposedHookLoadPackage {
         if (fromSource == null) fromSource = launching.get();
         if (target == null) return fromSource;
         ActivityInfo info = (ActivityInfo) field(target, "info");
-        return routes.resolve(info.packageName, info.applicationInfo.uid / 100000,
+        SessionRoutes.Lease targetLease = routeForActivity(target);
+        SessionRoutes.Lease resolved = routes.resolve(info.packageName, info.applicationInfo.uid / 100000,
                 (int) field(target, "launchedFromUid"), fromSource);
+        if (targetLease != null && resolved != null && targetLease != resolved) throw new SecurityException("cross-process session launch");
+        return resolved != null ? resolved : targetLease;
     }
     private SessionRoutes.Lease routeForActivity(Object record) {
         if (record == null) return null;
         ActivityInfo info = (ActivityInfo) field(record, "info");
-        return routes.app(info.packageName, info.applicationInfo.uid / 100000);
+        return routes.activity(info.packageName, info.applicationInfo.uid / 100000, info.applicationInfo.uid);
     }
     private SessionRoutes.Lease routeForTask(Object task) {
         if (task == null) return null;
