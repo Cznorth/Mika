@@ -11,6 +11,8 @@ import android.os.SystemClock
 import android.util.Log
 import android.view.Surface
 import com.wangzan101.mika.shell.IMikaShell
+import com.wangzan101.mika.cap.phone.shell.RootDisplayIsolation
+import com.wangzan101.mika.cap.phone.shell.RootDisplayRoutingUnavailable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -74,6 +76,7 @@ class AgentDisplay(
         if (id < 0) {
             Log.e(TAG, "shell.createDisplay returned id=$id")
             closeLocal()
+            if (id == RootDisplayIsolation.CREATE_ROUTING_UNAVAILABLE) throw RootDisplayRoutingUnavailable()
             throw IllegalStateException("createDisplay failed")
         }
         displayId = id

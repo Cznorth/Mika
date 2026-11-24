@@ -4,6 +4,23 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class RootDisplayIsolationTest {
+    @Test fun defaultGroupIsRejectedBeforeMirageRegistrationOrAnyAppLaunch() {
+        try {
+            RootDisplayIsolation.requireNativeGroup(14, 0)
+            fail("Mirage must not be used as an independent-group fallback")
+        } catch (_: RootDisplayRoutingUnavailable) { }
+        assertEquals(2, RootDisplayIsolation.requireNativeGroup(14, 2))
+    }
+
+    @Test fun missingGroupAndPrimaryDisplayRemainUnavailable() {
+        for ((id, group) in listOf(0 to 2, 14 to null, 14 to -1)) {
+            try {
+                RootDisplayIsolation.requireNativeGroup(id, group)
+                fail("invalid display=$id group=$group")
+            } catch (_: IllegalStateException) { }
+        }
+    }
+
     @Test fun expiredReusedAndCollapsedDisplaysFailClosed() {
         assertTrue(RootDisplayIsolation.live(7, "virtual:ours,1", "virtual:ours,1", 2))
         assertFalse(RootDisplayIsolation.live(0, "local:main", "local:main", 1))

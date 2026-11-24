@@ -737,6 +737,8 @@ class TaskRun(
                             )
                         },
                     ).also { rootScreen = it }
+                } catch (e: com.wangzan101.mika.cap.phone.shell.RootDisplayRoutingUnavailable) {
+                    throw PhoneUnavailable("系统尚不能保证后续页面留在虚拟屏，已停止启动以避免点亮或切换主屏。需要系统任务路由隔离后才能恢复。")
                 } catch (e: RootDisplayDisabled) {
                     if (BuildConfig.DEBUG) Log.w("MikaRootDisplay", "RootDisplay disabled", e)
                     throw PhoneUnavailable("Root 显示控制尚未在此构建中启用。")

@@ -101,6 +101,9 @@ class ShellService(
             Log.w(TAG, "root trusted independent display unavailable")
             -1
         } else createVirtualDisplay(surface, width, height, dpi, trusted = true)
+    } catch (t: RootDisplayRoutingUnavailable) {
+        Log.e(TAG, "refusing unconfined Mirage display fallback", t)
+        RootDisplayIsolation.CREATE_ROUTING_UNAVAILABLE
     } catch (t: Throwable) {
         Log.e(TAG, "trusted display creation failed", t)
         -1
@@ -109,36 +112,19 @@ class ShellService(
     private fun createVirtualDisplay(surface: Surface, width: Int, height: Int, dpi: Int, trusted: Boolean): Int {
         val flags = displayFlags(Build.VERSION.SDK_INT, trusted)
         val vd = displayManager.createVirtualDisplay("mika-agent", width, height, dpi, surface, flags)
-        var attached = false
         val id = vd.display.displayId
         val group = try {
-            var group = displayGroup(id)
-            check(id > Display.DEFAULT_DISPLAY && group != null) { "display group unavailable: display=$id group=$group" }
-            // ColorOS 16 无视 OWN_DISPLAY_GROUP,普通虚拟屏都进默认组。把这块屏登记成系统的「后台流转」屏
-            // (见 [attachMirage]),再改一下尺寸让系统重新分组,它就自成一组:主屏熄屏、锁屏时照常出帧,
-            // 而且保留我们的 STEAL_TOP_FOCUS_DISABLED,用户用着手机时也不抢焦点。
-            if (group <= 0 && com.wangzan101.mika.BuildConfig.EXPERIMENTAL_LOCKED_PHONE && attachMirage(id, width, height, dpi)) {
-                attached = true
-                vd.resize(width, height, dpi + 1)
-                vd.resize(width, height, dpi)
-                group = waitForGroup(id)
-                if (group == null || group <= 0) {
-                    Log.w(TAG, "display $id stayed in group $group after mirage attach")
-                    detachMirage(id)
-                    attached = false
-                } else Log.i(TAG, "display $id moved to independent group $group")
-            }
-            check(group != null && group > 0) { "independent display group unavailable: display=$id group=$group" }
-            group
+            // 独立电源组只解决熄屏出帧，并不能约束 App 后续启动的 Activity/Task。
+            // Mirage mode 4 会把部分无来源启动改派到主屏；系统任务隔离尚未实现前禁止此回退。
+            RootDisplayIsolation.requireNativeGroup(id, displayGroup(id))
         } catch (t: Throwable) {
-            if (attached) detachMirage(id)
             vd.release()
             throw t
         }
         val identity = displayIdentity(id) ?: run { vd.release(); error("display identity unavailable") }
         synchronized(displays) {
             displayIdentities[id] = identity
-            displays[id] = { if (attached) detachMirage(id); vd.release() }
+            displays[id] = { vd.release() }
         }
         try {
             setFullscreenWindowingMode(id)
